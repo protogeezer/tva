@@ -1,18 +1,32 @@
 ## This file should be run as the first step of va_alg_two_groups.py
 from va_functions import *
 import time
+import warnings
 
 # Data should be at class level
 # Returns covariance matrix of teacher effects and covariance between girl and boy class shocks
 # Ben thinks Liz is the bestest ever
+@profile
 def estimate_mu_covariances(data, teachers, teacher_class_map):
     cov_mu_00, cov_mu_11, cov_mu_01 = 0, 0, 0
     n_obs_used_00, n_obs_used_11, n_obs_used_01 = 0, 0, 0
     cov_theta_01 = 0
     n_obs_used_theta = 0
-    
+
     for teacher in teachers:
         df = data[(data['teacher'] == teacher) & (data['mean score'].notnull())]
+
+        classes = []
+        for class_ in teacher_class_map[teacher]:
+            if len(df[(df['type'] == 0) & (df['class id'] == class_)]) > 0 \
+               and len(df[(df['type'] == 1) & (df['class id'] == class_)]) > 0:
+                classes += [class_]
+
+        if len(classes) == 0:
+            continue
+        
+        df = df[[c in classes for c in df['class id'].values]]
+
         scores_0 = df[df['type'] == 0]['mean score'].values
         sizes_0 = df[df['type'] == 0]['size'].values
         scores_1 = df[df['type'] == 1]['mean score'].values
@@ -20,10 +34,11 @@ def estimate_mu_covariances(data, teachers, teacher_class_map):
         
         assert len(scores_0) == len(sizes_0)
         assert len(scores_1) == len(sizes_1)
-        if len(scores_0) != len(scores_1):
-            break
-        
-        classes = teacher_class_map[teacher]
+        try:
+            assert len(scores_0) == len(scores_1)        
+        except AssertionError:
+            print(df)
+            assert False
         
         for i in range(len(scores_0)):
             cov_theta_01 += scores_0[i] * scores_1[i] * (sizes_0[i] + sizes_1[i])
@@ -37,9 +52,15 @@ def estimate_mu_covariances(data, teachers, teacher_class_map):
                 cov_mu_01 += scores_0[i] * scores_1[j] * (sizes_0[i] + sizes_1[j]) \
                              + scores_1[i] * scores_0[j] * (sizes_1[i] + sizes_0[j])
                 n_obs_used_01 += sizes_0[i] + sizes_1[j] + sizes_1[i] + sizes_0[j]
-                
 
-    var_mu_hat = [cov_mu_00 / n_obs_used_00, cov_mu_11 / n_obs_used_11]
+        assert n_obs_used_theta > 0
+                
+    try:
+        var_mu_hat = [cov_mu_00 / n_obs_used_00, cov_mu_11 / n_obs_used_11]
+    except ZeroDivisionError:
+        print(data)
+        raise Exception('Not enough teachers teach classes with students of both types')
+
     cov_mu_hat = cov_mu_01 / n_obs_used_01
     cov_theta_01 = cov_theta_01 / n_obs_used_theta - cov_mu_hat
     
@@ -52,12 +73,21 @@ def estimate_mu_covariances(data, teachers, teacher_class_map):
 ## a residual can be specified
 ## Covariates is a list like ['prev score', 'free lunch']
 ## Column names can specify 'class id', 'student id', and 'type'
-def calculate_covariances(data, covariates, residual = None, moments = None, column_names = None):
+def calculate_covariances(data, covariates, residual = None, moments = None, column_names = None, class_type_level_vars = []):
     # Fix column names
     if column_names is not None:
         start = time.time()
         data.rename(columns={column_names[k]: k for k in column_names}, inplace=True)
-        print('Time to rename columns ' + str(time.time() - start))
+        if 'type' in column_names and column_names['type'] in covariates:
+            covariates[covariates.index(column_names['type'])] = 'type'
+        timer_print('Time to rename columns ' + str(time.time() - start))
+
+    for var in ['score', 'student id', 'teacher', 'class id', 'year', 'type']:
+        try:
+            assert var in data.columns
+        except AssertionError:
+            raise Exception(var + ' must be in column names')
+
     if moments is None:
         moments = {}
 
@@ -65,22 +95,22 @@ def calculate_covariances(data, covariates, residual = None, moments = None, col
     if residual is None:
         start = time.time()
         data.loc[:, 'residual'], _ = residualize(data, 'score', covariates, 'teacher')
-        print('Time to residualize ' + str(time.time() - start))
+        timer_print('Time to residualize ' + str(time.time() - start))
     else:
         data.rename(columns={residual: 'residual'}, inplace=True)
     
     start = time.time()
     data = data[data['residual'].notnull()] # Drop students with missing scores
-    print('Time to drop students with missing residuals ' + str(time.time() - start))
+    timer_print('Time to drop students with missing residuals ' + str(time.time() - start))
     
     start = time.time()
     ssr = [np.var(data[data['type'] == i]['residual'].values) for i in [0,1]] # sum of squared residuals
-    print('Time to calculae SSR ' + str(time.time() - start))
+    timer_print('Time to calculae SSR ' + str(time.time() - start))
     
     # Reduce data to class level
     # Count number of students in class
     start = time.time()
-    class_type_level_vars = ['teacher', 'class id', 'type', 'year', 'true va 0', 'true va 1']
+    class_type_level_vars = ['teacher', 'class id', 'type', 'year'] + class_type_level_vars
     class_type_df = data.groupby(class_type_level_vars)['student id'].count().reset_index()
     class_type_df.columns = class_type_level_vars + ['size']
     
@@ -94,13 +124,13 @@ def calculate_covariances(data, covariates, residual = None, moments = None, col
     temp = data.groupby(class_type_level_vars)['residual'].var().reset_index()
     temp.columns = class_type_level_vars + ['var']
     class_type_df = pd.merge(class_type_df, temp)
-    print('Time to collapse to class level ' + str(time.time() - start))
+    timer_print('Time to collapse to class level ' + str(time.time() - start))
 
     assert len(class_type_df.index) > 0
     
     start = time.time()
     var_epsilon_hat = moments.get('var epsilon', [estimate_var_epsilon(class_type_df[class_type_df['type']==i]) for i in [0,1]])
-    print('Time to calculate var epsilon ' + str(time.time() - start))
+    timer_print('Time to calculate var epsilon ' + str(time.time() - start))
     assert np.array(var_epsilon_hat).shape == (2,)
     
     # Estimate TVA variances and covariances
@@ -109,21 +139,20 @@ def calculate_covariances(data, covariates, residual = None, moments = None, col
               if 'var_mu' in moments and 'cov_mu' in moments  and 'cov theta' in moments \
               else estimate_mu_covariances(class_type_df, teachers,
                                            teacher_class_map)
-    print('Time to calculate mu covariance ' + str(time.time() - start))
+    timer_print('Time to calculate mu covariance ' + str(time.time() - start))
     
     assert np.array(var_mu_hat).shape == (2,)
     assert np.array(cov_mu_hat).shape == ()
     
     corr_mu_hat = cov_mu_hat/(var_mu_hat[0]*var_mu_hat[1])**(.5)
     if not (corr_mu_hat > -1 and corr_mu_hat < 1):
-        print(type(corr_mu_hat))
-        print(cov_mu_hat)
-        print(var_mu_hat)
-        assert False
+        warnings.warn('Calculated corr_mu_hat is ' + str(corr_mu_hat) + '; it should be between 0 and 1. Your data may be too small.')
     
     var_theta_hat = [ssr[i] - var_mu_hat[i] - var_epsilon_hat[i]
                      for i in [0, 1]]
+
+    n_obs = len(data['residual'].notnull())
     
     return {'var mu':var_mu_hat, 'cov mu':cov_mu_hat, 'corr mu':corr_mu_hat,\
             'var epsilon':var_epsilon_hat, 'var theta':var_theta_hat, 'cov theta':cov_theta_01}, \
-            class_type_df, teachers
+            n_obs, class_type_df, teachers

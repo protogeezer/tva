@@ -1,10 +1,11 @@
 import numpy as np
 import statsmodels.api as sm
-from scipy.stats import chi2 as chi2
-import scipy.sparse.linalg as sparse_linalg
+from scipy.stats import chi2 as chi2c
 import numpy.linalg as linalg
 import pandas as pd
 
+def timer_print(string):
+    print(string)
 
 def estimate_var_epsilon(data):
     data = data[data['var'].notnull()]
@@ -29,19 +30,27 @@ def demean(df, var_name, first_group, second_group = None):
 def residualize(df, y_name, x_names, first_group, second_group = None):
     if len(x_names) == 0 and second_group is None:
         return df[y_name], None
-    elif len(x_names) == 0:
-       return demean(df, y_name, second_group) + np.mean(df[y_name]), None
     else:
-        Y = np.array(demean(df, y_name, first_group, second_group))
-        X = np.transpose([demean(df, x, first_group, second_group)
-                      for x in x_names])
-        beta = linalg.lstsq(X, Y)[0]
-        
-        if second_group is None:
-            return df[y_name] - np.dot(df[x_names], beta), beta 
-        else:
-            x_demeaned = np.transpose([demean(df, x, second_group) + np.mean(df[x]) for x in x_names])
-            return demean(df, y_name, second_group) + np.mean(df[y_name]) - np.dot(x_demeaned, beta), beta
+        if len(x_names) == 0:
+           return demean(df, y_name, second_group) + np.mean(df[y_name]), None
+        else:      
+            # Drop missing values to calculate beta
+            df_no_null = df[[y_name, first_group] + x_names].dropna() if second_group is None \
+                         else df[[y_name, first_group, second_group] + x_names].dropna()
+
+            Y = np.array(demean(df_no_null, y_name, first_group, second_group))
+            X = np.transpose([demean(df_no_null, x, first_group, second_group)
+                          for x in x_names])
+            try:
+                beta = linalg.lstsq(X, Y)[0]
+            except ValueError:
+                raise Exception('Your covariates may be too large relative to the length of your data. This may happen after dropping many null values.')
+            
+            if second_group is None:
+                return df[y_name] - np.dot(df[x_names], beta), beta 
+            else:
+                x_demeaned = np.transpose([demean(df, x, second_group) + np.mean(df[x]) for x in x_names])
+                return demean(df, y_name, second_group) + np.mean(df[y_name]) - np.dot(x_demeaned, beta), beta
 
 
 def get_teacher_class_map(data, teachers):
