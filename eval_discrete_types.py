@@ -1,26 +1,35 @@
 import pandas as pd
 import numpy as np
 import va_functions
-#from two_type_covariance import calculate_covariances
-from va_alg_two_groups import calculate_va
+from two_type_covariance import calculate_covariances
+import time
+import copy
 
 # Basic algorithm: Effect is constant within teacher
-directory = '~/Documents/tva/algorithm/'
-filename = 'two_type_simulated_data'
-output_file = open('two_types', 'w')
+directory = '/n/home09/esantorella/IRS_NYC/empirics/data/'
+filename = 'students_with_controls'
+output_file = open('two_types_100000', 'w')
 
-data = pd.read_csv(directory+filename+'.csv', sep=',', nrows = 100000)
-output_file.write('Number of observations: ' + str(len(data.index)))
-data.loc[:, 'year'] = data['class id']
+controls = ['sped', 'limited_english', 'student_grade', 'ETHNethnici_1', 'ETHNethnici_2', 'ETHNethnici_3', 'ETHNethnici_4', 'PreZl_score', 'PreOl_other', 'l1_days_absent', 'l1_stu_suspension', 'female']
+
+data = pd.read_csv(directory+filename+'.csv', sep=',', nrows=100000, usecols=['score', 'stuid', 'teacher', 'class', 'year']+controls)
+
+start = time.time()
+data.loc[:, 'residual'], _ = va_functions.residualize(data, 'score', controls, 'teacher')
+output_file.write('Time to residualize: ' + str(time.time() - start))
+
+output_file.write('\nNumber of observations with non-null residual : ' + str(sum(data['residual'].notnull())))
+data.loc[:, 'lag score binary'] = [int(score - np.mean(data['PreZl_score'].values) > 0) for score in data['PreZl_score'].values]
+data.loc[:, 'lag absence binary'] = [int(score - np.mean(data['l1_days_absent'].notnull().values) > 0) for score in data['l1_days_absent'].values]
 
 # Run the algorithm
-class_type_df, var_mu_hat, corr_mu_hat, var_theta_hat, var_epsilon_hat = calculate_va(data, ['x1', 'x2'], jackknife = False)
+#for type_var in ['female', 'lag score binary', 'limited_english', 'lag absence binary', 'sped']:
+for type_var in ['lag absence binary']:
+    column_names = {'student id':'stuid', 'type':type_var, 'class id':'class'}
+    output_file.write('\n\n\nSplitting on variable: ' + type_var) 
+    start = time.time()
+    params, n_obs, _, _ = calculate_covariances(copy.copy(data), [], residual='residual', column_names=column_names)
+    output_file.write('\nTime: ' + str(time.time() - start))
 
-corr_mu = .7
-corr_theta = .9
-params = {'cov mu':[[.018, corr_mu*(.018*.012)**(.5)], [corr_mu*(.018*.012)**(.5), .012]], 'cov theta':[[.03, corr_theta*(.03*.02)**.5], [corr_theta*(.03*.02)**.5, .02]], 'mean class size':24, 'mean classes taught':3}
-
-output_file.write('\nCorr mu actual value; measured: ' + '.7' + '; ' + str(corr_mu_hat))
-output_file.write('\nVar mu actual value; measured: ' + str(params['cov mu'][0][0]) +', ' + str(params['cov mu'][1][1]) + '; ' + str(var_mu_hat))
-output_file.write('\nVar theta actual value; measured: ' + str(params['cov theta'][0][0]) +', ' + str(params['cov theta'][1][1]) + '; ' + str(var_theta_hat))
-output_file.write('\nVar epsilon actual value; measured: ' + '.2455; ' + str(var_epsilon_hat))
+    for k in params:
+        output_file.write('\n' + k + ' ' + str(params[k]))
