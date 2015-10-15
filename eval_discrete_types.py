@@ -23,8 +23,7 @@ data.loc[:, 'lag score binary'] = [int(score - np.mean(data['PreZl_score'].value
 data.loc[:, 'lag absence binary'] = [int(score - np.mean(data['l1_days_absent'].notnull().values) > 0) for score in data['l1_days_absent'].values]
 
 # Run the algorithm
-#for type_var in ['female', 'lag score binary', 'limited_english', 'lag absence binary', 'sped']:
-for type_var in ['lag absence binary']:
+for type_var in ['female', 'lag score binary', 'limited_english', 'lag absence binary', 'sped']:
     column_names = {'student id':'stuid', 'type':type_var, 'class id':'class'}
     output_file.write('\n\n\nSplitting on variable: ' + type_var) 
     start = time.time()
