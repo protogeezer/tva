@@ -15,30 +15,22 @@ def estimate_mu_covariances(data, teachers, teacher_class_map):
 
     for teacher in teachers:
         df = data[(data['teacher'] == teacher) & (data['mean score'].notnull())]
-
-        classes = []
-        for class_ in teacher_class_map[teacher]:
-            if len(df[(df['type'] == 0) & (df['class id'] == class_)]) > 0 \
-               and len(df[(df['type'] == 1) & (df['class id'] == class_)]) > 0:
-                classes += [class_]
-
-        if len(classes) == 0:
-            continue
+        df_0 = df[df['type'] == 0]
+        df_1 = df[df['type'] == 1]
         
-        df = df[[c in classes for c in df['class id'].values]]
-
-        scores_0 = df[df['type'] == 0]['mean score'].values
-        sizes_0 = df[df['type'] == 0]['size'].values
-        scores_1 = df[df['type'] == 1]['mean score'].values
-        sizes_1 = df[df['type'] == 1]['size'].values
+        classes_0 = df_0['class id'].values
+        classes_1 = df_1['class id'].values
+        
+        if not np.array_equal(classes_0, classes_1):
+            continue
+            
+        scores_0 = df_0['mean score'].values
+        scores_1 = df_1['mean score'].values
+        sizes_0 = df_0['size'].values
+        sizes_1 = df_1['size'].values
         
         assert len(scores_0) == len(sizes_0)
         assert len(scores_1) == len(sizes_1)
-        try:
-            assert len(scores_0) == len(scores_1)        
-        except AssertionError:
-            print(df)
-            assert False
         
         for i in range(len(scores_0)):
             cov_theta_01 += scores_0[i] * scores_1[i] * (sizes_0[i] + sizes_1[i])
