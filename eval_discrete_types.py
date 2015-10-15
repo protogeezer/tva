@@ -6,7 +6,8 @@ import time
 import copy
 
 # Basic algorithm: Effect is constant within teacher
-directory = '/n/home09/esantorella/IRS_NYC/empirics/data/'
+#directory = '/n/home09/esantorella/IRS_NYC/empirics/data/'
+directory =  '/home/lizs/Dropbox/lizs_backup/Documents/tva'
 filename = 'students_with_controls'
 output_file = open('two_types_100000', 'w')
 
