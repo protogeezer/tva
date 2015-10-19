@@ -69,7 +69,7 @@ def estimate_mu_variance(data, teachers, teacher_class_map):
 # moments contains 'var epsilon', 'var mu', 'cov mu', 'var theta', 'cov theta'
 # Column names can specify 'class id', 'student id', and 'teacher'
 # class_level_vars can contain any variables are constant at the class level and will stay in the final data set
-def calculate_va(data, covariates, jackknife, residual=None, moments=None, column_names=None, parallel=False, class_level_vars=['teacher', 'class id'], categorical_controls = None):
+def calculate_va(data, covariates, jackknife, residual=None, moments=None, column_names=None, parallel=False, class_level_vars=['teacher', 'class id'], categorical_controls = None, num_cores = None):
     ## First, a bunch of data processing
     if moments is None:
         moments = {}
@@ -89,6 +89,8 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
     timer_print('Residualize time ' + str(time.time() - start))
 
     data = data[data['residual'].notnull()]  # Drop students with missing scores
+    assert len(data) > 0
+        
     start = time.time()
     ssr = np.var(data['residual'].values)  # Calculate sum of squared residuals
     timer_print('SSR time ' + str(time.time() - start))
@@ -102,7 +104,8 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
     # Calculate mean and merge it back into class-level data
     class_df.loc[:, 'mean score'] = data.groupby(class_level_vars)['residual'].mean().values
     class_df.loc[:, 'var'] = data.groupby(class_level_vars)['residual'].var().values
-    assert len(class_df.index) > 0
+    assert len(class_df) > 0
+        
     timer_print('Time to collapse to class level ' + str(time.time() - start))
     
     if jackknife: # Drop teachers teaching only one class
@@ -136,7 +139,8 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
 
     ## Finally, compute value-added
     if parallel:
-        num_cores = multiprocessing.cpu_count()
+        if num_cores is None:
+            num_cores = multiprocessing.cpu_count()
         pool = ThreadPool(num_cores)
         sublists = [(class_df, teachers[i::num_cores], var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
                     for i in range(num_cores)]
