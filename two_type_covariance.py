@@ -6,7 +6,6 @@ import warnings
 # Data should be at class level
 # Returns covariance matrix of teacher effects and covariance between girl and boy class shocks
 # Ben thinks Liz is the bestest ever
-@profile
 def estimate_mu_covariances(data, teachers, teacher_class_map):
     cov_mu_00, cov_mu_11, cov_mu_01 = 0, 0, 0
     n_obs_used_00, n_obs_used_11, n_obs_used_01 = 0, 0, 0
