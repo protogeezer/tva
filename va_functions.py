@@ -28,12 +28,8 @@ def demean(df, var_name, first_group, second_group = None):
 # Calculates beta using y_name = x_names * beta + group_name (dummy) + dummy_control_name
 # Returns               y_name - x_names * beta - dummy_control_name
 def residualize(df, y_name, x_names, first_group, second_group = None):
-    if len(x_names) == 0 and second_group is None:
-        return df[y_name], None
-
-    if len(x_names) == 0:
-        return demean(df, y_name, second_group) + np.mean(df[y_name]), None
-     
+    df['constant'] = 1
+    x_names.append('constant')
     # Drop missing values to calculate beta
     df_no_null = df[[y_name, first_group] + x_names].dropna() if second_group is None \
                  else df[[y_name, first_group, second_group] + x_names].dropna()
