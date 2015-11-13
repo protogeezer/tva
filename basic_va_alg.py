@@ -10,38 +10,45 @@ def timer_print(string):
 #    print(string)
 
 # VA for one teacher, for each class
-def get_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
+def get_va(df, teacher, classes, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
     df = copy.copy(df)
     classes = df['class id'].values
     assert len(classes) == len(set(classes))
 
-    precisions = np.zeros(len(classes))
-    numerators = np.zeros(len(classes))
+    precisions = np.empty(len(classes))
+    numerators = np.empty(len(classes))
     
     for k in range(len(classes)):
         class_size = df['size'].values[k]
         precisions[k] = 1 / (var_theta_hat + var_epsilon_hat / class_size)
+        assert precisions[k] > 0
         numerators[k] = precisions[k] * df['mean score'].values[k]
         
     precision_sum = np.sum(precisions)
+    num_sum = np.sum(numerators)
     if jackknife:
-        num_sum = np.sum(numerators)
-        df.loc[:, 'va'] = [(num_sum - n) / (precision_sum - p + 1 / var_mu_hat)
+        array = np.empty((len(classes), 5))
+        array[:, 0] = classes
+        array[:, 1].fill(teacher)
+        # unshrunk va
+        array[:, 2] = [(num_sum - n) / (precision_sum - p)
+                        for n, p in zip(numerators, precisions)]
+        # shrunk va
+        array[:, 3] = [(num_sum - n) / (precision_sum - p + 1 / var_mu_hat)
                            for n, p in zip(numerators, precisions)]
-        df.loc[:, 'variance'] = [var_mu_hat / (1 + var_mu_hat * (precision_sum - p))
+        #variance
+        array[:, 4] = [var_mu_hat / (1 + var_mu_hat * (precision_sum - p))
                                  for p in precisions]
+        return array
     else:
-        df = pd.DataFrame({'teacher': df['teacher'].values,
-                           'va': np.sum(numerators) / (precision_sum + 1 / var_mu_hat),
-                           'variance': 1 / (precision_sum + 1 / var_mu_hat)})
-    return df
+        unshrunk_va = num_sum / precision_sum
+        va = num_sum / (precision_sum + 1 / var_mu_hat)
+        variance =  1 / (precision_sum + 1 / var_mu_hat)
+        return [teacher, unshrunk_va, va, variance]
 
-
-def get_va_from_teacher_list(input_tuple):
-    data, teacher_list, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife = input_tuple
-    return pd.concat([get_va(data[data['teacher'] == teacher], var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
-                      for teacher in teacher_list])
-
+def get_va_from_tuple(input_tuple):
+    df, t, classes, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife = input_tuple
+    return get_va(df[df['teacher'] == t], teacher, classes, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
 
 def estimate_mu_variance(data, teachers, teacher_class_map):
     variance = 0
@@ -123,6 +130,7 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
         class_df = drop_one_class_teachers(class_df, get_teacher_class_map(class_df, remove_duplicates(class_df['teacher'].values)))
         timer_print('Time to drop one class teachers ' + str(time.time() - start))
     teachers = remove_duplicates(class_df['teacher'].values)
+    teacher_class_map = get_teacher_class_map(class_df, teachers)
     assert teachers[0] in class_df['teacher'].values
     ## Second, calculate a bunch of moments
     # Calculate variance of epsilon
@@ -131,6 +139,7 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
         var_epsilon_hat = moments['var epsilon']
     else:
         var_epsilon_hat = estimate_var_epsilon(class_df)
+    assert var_epsilon_hat > 0 
     timer_print('Time to estimate var epsilon' + str(time.time() - start))
 
     # Estimate TVA variances and covariances
@@ -138,13 +147,15 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
     if 'var mu' in moments:
         var_mu_hat = moments['var mu']
     else:
-        var_mu_hat = estimate_mu_variance(class_df, teachers, get_teacher_class_map(class_df, teachers))
-
+        var_mu_hat = estimate_mu_variance(class_df, teachers, teacher_class_map)
+    assert var_mu_hat > 0 
     timer_print('Time to estimate var mu hat ' + str(time.time() - start))
 
     # Estimate variance of class-level shocks
     start = time.time()
     var_theta_hat = moments.get('var theta', ssr - var_mu_hat - var_epsilon_hat)
+    assert var_theta_hat > 0
+
     timer_print('Time to estimate var theta hat ' + str(time.time() - start))
 
     if moments_only:
@@ -155,21 +166,25 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
             if num_cores is None:
                 num_cores = cpu_count()
             pool = ThreadPool(num_cores)
-            sublists = [(class_df, teachers[i::num_cores], var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
-                        for i in range(num_cores)]
-            results = pool.map(get_va_from_teacher_list, sublists)
+            params = [(class_df, t, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife) for t in teachers]
+            results = pool.map(get_va_from_tuple, params)
             
             pool.close()
             pool.join()
         else:
             assert teachers[0] in class_df['teacher'].values
             start = time.time()
-            results = [get_va(class_df[class_df['teacher'] == t], var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
+            results = [get_va(class_df[class_df['teacher'] == t], t, teacher_class_map[t], var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
                        for t in teachers]
             timer_print('Time to compute VA ' + str(time.time() - start))
 
-        results = pd.concat(results).reset_index().drop('index', 1)
-
+        results = np.vstack(results)
+        results = pd.DataFrame(results)
+        if jackknife:
+            results.columns = ['class id', 'teacher', 'unshrunk va', 'va', 'variance']
+        else: 
+            results.columns = ['teacher', 'unshrunk va', 'va', 'variance']
+            
         if column_names is not None:
             results.rename(columns={column_names[key]:key for key in column_names}, inplace=True)
                        
