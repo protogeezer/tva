@@ -4,6 +4,8 @@ from va_functions import *
 import pandas as pd
 import time
 import copy
+import warnings
+import random
 
 def timer_print(string):
     pass
@@ -50,13 +52,21 @@ def get_va_from_tuple(input_tuple):
     df, t, classes, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife = input_tuple
     return get_va(df[df['teacher'] == t], teacher, classes, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
 
-def estimate_mu_variance(data, teachers, teacher_class_map):
+def estimate_mu_variance(data, teachers):
+
+#    def estimate_mu_var_one_teacher(teacher):
+#        data_this_teacher = data[(data['teacher'] == teacher) & (data['mean score'].notnull())
+#        try:
+#            score_1, score_2 = random.sample(data_this_teacher['mean score'].values, 2)
+#            return score_1 * score_2, 0
+#        except ValueError:
+#            return
+            
     variance = 0
     n_obs_used = 0
 
     for teacher in teachers:
         data_this_teacher = data[(data['teacher'] == teacher) & (data['mean score'].notnull())]
-        classes = teacher_class_map[teacher]
         
         def calculate_var_and_n(scores, sizes):
             assert len(scores) == len(sizes)
@@ -130,8 +140,8 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
         class_df = drop_one_class_teachers(class_df, get_teacher_class_map(class_df, remove_duplicates(class_df['teacher'].values)))
         timer_print('Time to drop one class teachers ' + str(time.time() - start))
     teachers = remove_duplicates(class_df['teacher'].values)
-    teacher_class_map = get_teacher_class_map(class_df, teachers)
     assert teachers[0] in class_df['teacher'].values
+    teacher_class_map = get_teacher_class_map(class_df, teachers)
     ## Second, calculate a bunch of moments
     # Calculate variance of epsilon
     start = time.time()
@@ -148,13 +158,18 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
         var_mu_hat = moments['var mu']
     else:
         var_mu_hat = estimate_mu_variance(class_df, teachers, teacher_class_map)
-    assert var_mu_hat > 0 
+    if var_mu_hat <= 0:
+        warnings.warn('Var mu hat is negative. Measured to be ' + str(var_mu_hat))
+        var_mu_hat = 0
+
     timer_print('Time to estimate var mu hat ' + str(time.time() - start))
 
     # Estimate variance of class-level shocks
     start = time.time()
     var_theta_hat = moments.get('var theta', ssr - var_mu_hat - var_epsilon_hat)
-    assert var_theta_hat > 0
+    if var_theta_hat < 0:
+        warnings.warn('Var theta hat is negative. Measured to be ' + str(var_theta_hat))
+        var_theta_hat = 0
 
     timer_print('Time to estimate var theta hat ' + str(time.time() - start))
 
