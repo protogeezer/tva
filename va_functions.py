@@ -53,6 +53,10 @@ def residualize(df, y_name, x_names, first_group, second_group = None):
             
 
 def get_teacher_class_map(data, teachers):
+#    grouped = data.groupby('teacher')['class id']
+#    grouped = grouped.apply(lambda x: x.values)
+#    print(grouped)
+#    assert False
     return {teacher: data[data['teacher'] == teacher]['class id'].values for teacher in teachers}
 
 
@@ -76,9 +80,12 @@ def remove_duplicates(seq):
     return result
 
 
-def drop_one_class_teachers(class_df, teacher_class_map):
-    keep = [len(teacher_class_map[t]) >1 for t in class_df['teacher'].values]
-    return class_df[keep]
+def drop_one_class_teachers(class_df):
+    grouped = class_df.groupby('teacher')['class id']
+    df = pd.DataFrame(grouped.apply(lambda x: len(x) > 1).reset_index())
+    df.columns = ['teacher', 'keep']
+    class_df = pd.merge(df, class_df)
+    return class_df[class_df['keep']].drop('keep', axis=1)
 
 
 def binscatter(x, y, nbins):

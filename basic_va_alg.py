@@ -50,45 +50,36 @@ def get_va(df, teacher, classes, var_theta_hat, var_epsilon_hat, var_mu_hat, jac
 
 def get_va_from_tuple(input_tuple):
     df, t, classes, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife = input_tuple
-    return get_va(df[df['teacher'] == t], teacher, classes, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
+    return get_va(df[df['teacher'] == t], t, classes, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
 
-def estimate_mu_variance(data, teachers):
 
-#    def estimate_mu_var_one_teacher(teacher):
-#        data_this_teacher = data[(data['teacher'] == teacher) & (data['mean score'].notnull())
-#        try:
-#            score_1, score_2 = random.sample(data_this_teacher['mean score'].values, 2)
-#            return score_1 * score_2, 0
-#        except ValueError:
-#            return
-            
-    variance = 0
-    n_obs_used = 0
+def estimate_mu_var_one_teacher(input_tuple):
+    teacher, data = input_tuple
+    data_this_teacher = data[(data['teacher'] == teacher) & (data['mean score'].notnull())]
+    try:
+        # TODO: See if there is a Numpy implementation for this
+        score_1, score_2 = random.sample(set(data_this_teacher['mean score'].values), 2)
+        return [score_1 * score_2, 1]
+    except ValueError: # if there is only one class
+        return [0, 0]
 
-    for teacher in teachers:
-        data_this_teacher = data[(data['teacher'] == teacher) & (data['mean score'].notnull())]
-        
-        def calculate_var_and_n(scores, sizes):
-            assert len(scores) == len(sizes)
-            var = 0
-            n = 0
-            for i in range(len(scores)):
-                score_i, size_i = scores[i], sizes[i]
-                for j in range(i+1, len(scores)):
-                    score_j, size_j = scores[j], sizes[j]
-                    
-                    var += score_i * score_j * (size_i + size_j)
-                    n += size_i + size_j
-            return var, n
-        
-        scores = data_this_teacher['mean score'].values
-        sizes = data_this_teacher['size'].values
-        var, n = calculate_var_and_n(scores, sizes)     
-        variance += var 
-        n_obs_used += n   
-
-    return variance / n_obs_used
-
+def estimate_mu_variance(data, teachers, parallel, num_cores):  
+    
+    if parallel:
+        if num_cores is None:
+            num_cores = cpu_count()
+        pool = ThreadPool(num_cores)
+        teacher_level_estimates = pool.map(estimate_mu_var_one_teacher, [(t, data) for t in teachers])
+        pool.close()
+        pool.join()
+    else:      
+        teacher_level_estimates = list(map(estimate_mu_var_one_teacher, [(t, data) for t in teachers]))
+    teacher_level_estimates = np.array(teacher_level_estimates)
+    try:
+        return np.sum(teacher_level_estimates[:, 0]) / np.sum(teacher_level_estimates[:, 1])
+    except TypeError:
+        print(teacher_level_estimates)
+        assert False
 
 # Returns VA's and important moments
 # a residual can be specified
@@ -96,6 +87,7 @@ def estimate_mu_variance(data, teachers):
 # moments contains 'var epsilon', 'var mu', 'cov mu', 'var theta', 'cov theta'
 # Column names can specify 'class id', 'student id', and 'teacher'
 # class_level_vars can contain any variables are constant at the class level and will stay in the final data set
+@profile
 def calculate_va(data, covariates, jackknife, residual=None, moments=None, column_names=None, parallel=False, class_level_vars=['teacher', 'class id'], categorical_controls = None, num_cores = None, moments_only = False):
     ## First, a bunch of data processing
     if moments is None:
@@ -137,7 +129,7 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
     
     if jackknife: # Drop teachers teaching only one class
         start = time.time()
-        class_df = drop_one_class_teachers(class_df, get_teacher_class_map(class_df, remove_duplicates(class_df['teacher'].values)))
+        class_df = drop_one_class_teachers(class_df)
         timer_print('Time to drop one class teachers ' + str(time.time() - start))
     teachers = remove_duplicates(class_df['teacher'].values)
     assert teachers[0] in class_df['teacher'].values
@@ -157,7 +149,7 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
     if 'var mu' in moments:
         var_mu_hat = moments['var mu']
     else:
-        var_mu_hat = estimate_mu_variance(class_df, teachers, teacher_class_map)
+        var_mu_hat = estimate_mu_variance(class_df, teachers, parallel, num_cores)
     if var_mu_hat <= 0:
         warnings.warn('Var mu hat is negative. Measured to be ' + str(var_mu_hat))
         var_mu_hat = 0
@@ -181,7 +173,7 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
             if num_cores is None:
                 num_cores = cpu_count()
             pool = ThreadPool(num_cores)
-            params = [(class_df, t, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife) for t in teachers]
+            params = [(class_df, t, teacher_class_map[t], var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife) for t in teachers]
             results = pool.map(get_va_from_tuple, params)
             
             pool.close()
