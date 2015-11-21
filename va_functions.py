@@ -13,16 +13,20 @@ def estimate_var_epsilon(data):
     assert var_epsilon_hat > 0
     return var_epsilon_hat
     
-def get_average(df, var_name, group_name):
-    grouped = df.groupby(group_name)[var_name]
-    return grouped.apply(lambda group: group.mean() + 0 * group)
-    
-# Demeaning with one or two fixed effects 
+
+# Demeaning with one or two fixed effects
 def fe_demean(df, var_name, first_group, second_group = None):
+    def f(vector): # demean within each group
+        v = vector.values
+        return v - np.mean(v)
+        
     if second_group is None:
-        return df[var_name] - get_average(df, var_name, first_group)  
-    return df[var_name] - get_average(df, var_name, first_group) \
-           - get_average(df, var_name, second_group) + np.mean(df[var_name])
+        return np.hstack(df.groupby(first_group)[var_name].apply(f).values)
+    else:
+        y = df[var_name].values
+        y_demeaned_first  = np.hstack(df.groupby(first_group)[var_name].apply(f).values)
+        y_demeaned_second = np.hstack(df.groupby(second_group)[var_name].apply(f).values)
+        return y - y_demeaned_first - y_demeaned_second + np.mean(y)
 
 
 # Calculates beta using y_name = x_names * beta + group_name (dummy) + dummy_control_name
@@ -37,7 +41,7 @@ def residualize(df, y_name, x_names, first_group, second_group = None):
         df_no_null = df[[y_name, first_group] + x_names].dropna() if second_group is None \
                      else df[[y_name, first_group, second_group] + x_names].dropna()
 
-        Y = np.array(fe_demean(df_no_null, y_name, first_group, second_group))
+        Y = fe_demean(df_no_null, y_name, first_group, second_group)
         X = np.transpose([fe_demean(df_no_null, x, first_group, second_group)
                       for x in x_names])
         try:
@@ -50,15 +54,7 @@ def residualize(df, y_name, x_names, first_group, second_group = None):
         else:
             x_demeaned = np.transpose([fe_demean(df, x, second_group) + np.mean(df[x]) for x in x_names])
             return fe_demean(df, y_name, second_group) - np.dot(x_demeaned, beta), beta
-            
-
-def get_teacher_class_map(data, teachers):
-#    grouped = data.groupby('teacher')['class id']
-#    grouped = grouped.apply(lambda x: x.values)
-#    print(grouped)
-#    assert False
-    return {teacher: data[data['teacher'] == teacher]['class id'].values for teacher in teachers}
-
+           
 
 # Mean 0, variance 1
 def normalize(vector):
