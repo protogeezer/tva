@@ -52,34 +52,21 @@ def get_va_from_tuple(input_tuple):
     df, t, classes, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife = input_tuple
     return get_va(df[df['teacher'] == t], t, classes, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
 
+@profile
+def estimate_mu_variance(data):
+    def f(vector):
+        try:
+            score_1, score_2 = random.sample(set(vector), 2)
+            return [score_1 * score_2, 1]
+        except ValueError:
+            return [0, 0]
+        
+    mu_estimates = np.array(list(data.groupby('teacher')['mean score'].apply(f).values))
+    n = np.sum(mu_estimates[:, 1])
+    mu_hat = np.sum(mu_estimates[:, 0]) / n
+    se = (np.sum(mu_estimates[:, 0]**2) - mu_hat**2) / (n-1)
+    return mu_hat, se
 
-def estimate_mu_var_one_teacher(input_tuple):
-    teacher, data = input_tuple
-    data_this_teacher = data[(data['teacher'] == teacher) & (data['mean score'].notnull())]
-    try:
-        # TODO: See if there is a Numpy implementation for this
-        score_1, score_2 = random.sample(set(data_this_teacher['mean score'].values), 2)
-        return [score_1 * score_2, 1]
-    except ValueError: # if there is only one class
-        return [0, 0]
-
-def estimate_mu_variance(data, teachers, parallel, num_cores):  
-    
-    if parallel:
-        if num_cores is None:
-            num_cores = cpu_count()
-        pool = ThreadPool(num_cores)
-        teacher_level_estimates = pool.map(estimate_mu_var_one_teacher, [(t, data) for t in teachers])
-        pool.close()
-        pool.join()
-    else:      
-        teacher_level_estimates = list(map(estimate_mu_var_one_teacher, [(t, data) for t in teachers]))
-    teacher_level_estimates = np.array(teacher_level_estimates)
-    try:
-        return np.sum(teacher_level_estimates[:, 0]) / np.sum(teacher_level_estimates[:, 1])
-    except TypeError:
-        print(teacher_level_estimates)
-        assert False
 
 # Returns VA's and important moments
 # a residual can be specified
@@ -149,7 +136,7 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
     if 'var mu' in moments:
         var_mu_hat = moments['var mu']
     else:
-        var_mu_hat = estimate_mu_variance(class_df, teachers, parallel, num_cores)
+        var_mu_hat, var_mu_hat_se = estimate_mu_variance(class_df)
     if var_mu_hat <= 0:
         warnings.warn('Var mu hat is negative. Measured to be ' + str(var_mu_hat))
         var_mu_hat = 0
@@ -195,4 +182,4 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
         if column_names is not None:
             results.rename(columns={column_names[key]:key for key in column_names}, inplace=True)
                        
-        return results, var_mu_hat, var_theta_hat, var_epsilon_hat, len(teachers)
+        return results, var_mu_hat, var_theta_hat, var_epsilon_hat, var_mu_hat_se, len(teachers)
