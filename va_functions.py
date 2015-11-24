@@ -120,3 +120,22 @@ def check_calibration(errors, precisions):
     assert mean_error < 3 * se
     assert mean_standardized_error > 1 - 2 * standardized_error_se 
     assert mean_standardized_error < 1 + 2 * standardized_error_se 
+    
+def get_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
+    array = df.values
+    precisions = np.array([1 / (var_theta_hat + var_epsilon_hat / class_size) 
+                          for class_size in array[:, 0]])
+    try:
+        numerators = precisions * array[:, 1]
+    except ValueError:
+        print(df)
+        print(precisions)
+        assert False
+    precision_sum = np.sum(precisions)
+    num_sum = np.sum(numerators)
+    # TODO: also return unshrunk va and variance
+    if jackknife:
+        return [(num_sum - n) / (precision_sum - p + 1 / var_mu_hat)
+                for n, p in zip(numerators, precisions)]
+    else:
+        return num_sum / (precision_sum + 1 / var_mu_hat)
