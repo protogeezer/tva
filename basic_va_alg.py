@@ -7,7 +7,6 @@ import warnings
 import random
 
 
-
 def estimate_mu_variance(data):
     def f(vector):
         try:
@@ -24,27 +23,18 @@ def estimate_mu_variance(data):
 
 
 def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
-    def get_va(array):
-        array = array.values
-        precisions = np.array([1 / (var_theta_hat + var_epsilon_hat / class_size) 
-                              for class_size in array[:, 1]])
-        numerators = precisions * array[:, 2]
-        precision_sum = np.sum(precisions)
-        num_sum = np.sum(numerators)
-        # TODO: also return unshrunk va and variance
-        if jackknife:
-            return [(num_sum - n) / (precision_sum - p + 1 / var_mu_hat)
-                    for n, p in zip(numerators, precisions)]
-        else:
-            return num_sum / (precision_sum + 1 / var_mu_hat)
-
+    def f(data):
+        return get_va(data, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
+        
     if jackknife:
-        results = df.groupby('teacher')[['class id', 'size', 'mean score']].apply(get_va).values
-        df['va'] = np.hstack(results)
+        results = df.groupby('teacher')[['size', 'mean score']].apply(f).values
+        print(results)
+        df.loc[:, 'va'] = np.hstack(results)
     else:
-        results = pd.DataFrame(df.groupby('teacher')[['class id', 'size', 'mean score']].apply(get_va).reset_index())
+        results = pd.DataFrame(df.groupby('teacher')[['size', 'mean score']].apply(f).reset_index())
         results.columns = ['teacher', 'va']
         df = pd.merge(df, results)
+    print(df)
     return df
 
 # Returns VA's and important moments
