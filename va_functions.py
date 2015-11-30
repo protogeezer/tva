@@ -1,11 +1,7 @@
 import numpy as np
-import statsmodels.api as sm
-from scipy.stats import chi2 as chi2c
 import numpy.linalg as linalg
 import pandas as pd
-
-def timer_print(string):
-    print(string)
+#from scipy.ndimage.measurements import find_objects
 
 def estimate_var_epsilon(data):
     data = data[data['var'].notnull()]
@@ -103,12 +99,6 @@ def binscatter(x, y, nbins):
     return bins, y_means 
 
 
-# p-value of chi-squared statistic
-def do_chi2_test(measurements, true_values, errors):
-    chi2_stat = np.sum([((m - v) / e)**2 for m, v, e in zip(measurements, true_values, errors)])
-    return chi2_stat, chi2.cdf(chi2_stat, len(measurements))
-
-
 def check_calibration(errors, precisions):         
     mean_error = np.mean(errors)
     se = (np.var(errors) / len(errors))**.5
@@ -125,12 +115,8 @@ def get_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
     array = df.values
     precisions = np.array([1 / (var_theta_hat + var_epsilon_hat / class_size) 
                           for class_size in array[:, 0]])
-    try:
-        numerators = precisions * array[:, 1]
-    except ValueError:
-        print(df)
-        print(precisions)
-        assert False
+    numerators = precisions * array[:, 1]
+
     precision_sum = np.sum(precisions)
     num_sum = np.sum(numerators)
     # TODO: also return unshrunk va and variance
@@ -139,3 +125,26 @@ def get_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
                 for n, p in zip(numerators, precisions)]
     else:
         return num_sum / (precision_sum + 1 / var_mu_hat)
+        
+def get_bootstrap_sample(myList):
+    indices = np.random.choice(range(len(myList)), len(myList))
+    return myList[indices]
+        
+#def get_bootstrap_distribution(estimator, data, block_level, n_iters):
+#    # Sort data
+#    data = data.reset_index()
+#    indices = np.argsort(data[block_level].values)
+#    data = data.loc[indices, :].reset_index()
+#    # Find groups of teachers
+#    slices = find_objects(data[block_level].values)
+#    # Convert to numpy array
+#    columns = data.columns
+#    data = data.values
+#    arrays = [data[sl] for sl in slices if sl is not None]
+#    return [estimator(pd.DataFrame(data=get_bootstrap_sample(arrays), columns=columns))
+#            for i in range(n_iters)]
+
+#def get_bootstrap_se(estimator, data, block_level, n_iters):
+#    distribution = get_bootstrap_distribution(estimator, data, block_level, n_iters)
+#    theta_hat = np.mean(distribution)
+#    return np.sum([(elt - theta_hat)**2 for elt in distribution])/(len(distribution) - 1)
