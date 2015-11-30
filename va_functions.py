@@ -1,11 +1,7 @@
 import numpy as np
-import statsmodels.api as sm
-from scipy.stats import chi2 as chi2c
 import numpy.linalg as linalg
 import pandas as pd
-
-def timer_print(string):
-    print(string)
+#from scipy.ndimage.measurements import find_objects
 
 def estimate_var_epsilon(data):
     data = data[data['var'].notnull()]
@@ -13,16 +9,20 @@ def estimate_var_epsilon(data):
     assert var_epsilon_hat > 0
     return var_epsilon_hat
     
-def get_average(df, var_name, group_name):
-    grouped = df.groupby(group_name)[var_name]
-    return grouped.apply(lambda group: group.mean() + 0 * group)
-    
-# Demeaning with one or two fixed effects 
+
+# Demeaning with one or two fixed effects
 def fe_demean(df, var_name, first_group, second_group = None):
+    def f(vector): # demean within each group
+        v = vector.values
+        return v - np.mean(v)
+        
     if second_group is None:
-        return df[var_name] - get_average(df, var_name, first_group)  
-    return df[var_name] - get_average(df, var_name, first_group) \
-           - get_average(df, var_name, second_group) + np.mean(df[var_name])
+        return np.hstack(df.groupby(first_group)[var_name].apply(f).values)
+    else:
+        y = df[var_name].values
+        y_demeaned_first  = np.hstack(df.groupby(first_group)[var_name].apply(f).values)
+        y_demeaned_second = np.hstack(df.groupby(second_group)[var_name].apply(f).values)
+        return y - y_demeaned_first - y_demeaned_second + np.mean(y)
 
 
 # Calculates beta using y_name = x_names * beta + group_name (dummy) + dummy_control_name
@@ -37,7 +37,7 @@ def residualize(df, y_name, x_names, first_group, second_group = None):
         df_no_null = df[[y_name, first_group] + x_names].dropna() if second_group is None \
                      else df[[y_name, first_group, second_group] + x_names].dropna()
 
-        Y = np.array(fe_demean(df_no_null, y_name, first_group, second_group))
+        Y = fe_demean(df_no_null, y_name, first_group, second_group)
         X = np.transpose([fe_demean(df_no_null, x, first_group, second_group)
                       for x in x_names])
         try:
@@ -50,11 +50,7 @@ def residualize(df, y_name, x_names, first_group, second_group = None):
         else:
             x_demeaned = np.transpose([fe_demean(df, x, second_group) + np.mean(df[x]) for x in x_names])
             return fe_demean(df, y_name, second_group) - np.dot(x_demeaned, beta), beta
-            
-
-def get_teacher_class_map(data, teachers):
-    return {teacher: data[data['teacher'] == teacher]['class id'].values for teacher in teachers}
-
+           
 
 # Mean 0, variance 1
 def normalize(vector):
@@ -76,9 +72,12 @@ def remove_duplicates(seq):
     return result
 
 
-def drop_one_class_teachers(class_df, teacher_class_map):
-    keep = [len(teacher_class_map[t]) >1 for t in class_df['teacher'].values]
-    return class_df[keep]
+def drop_one_class_teachers(class_df):
+    grouped = class_df.groupby('teacher')['class id']
+    df = pd.DataFrame(grouped.apply(lambda x: len(x) > 1).reset_index())
+    df.columns = ['teacher', 'keep']
+    class_df = pd.merge(df, class_df)
+    return class_df[class_df['keep']].drop('keep', axis=1)
 
 
 def binscatter(x, y, nbins):
@@ -100,12 +99,6 @@ def binscatter(x, y, nbins):
     return bins, y_means 
 
 
-# p-value of chi-squared statistic
-def do_chi2_test(measurements, true_values, errors):
-    chi2_stat = np.sum([((m - v) / e)**2 for m, v, e in zip(measurements, true_values, errors)])
-    return chi2_stat, chi2.cdf(chi2_stat, len(measurements))
-
-
 def check_calibration(errors, precisions):         
     mean_error = np.mean(errors)
     se = (np.var(errors) / len(errors))**.5
@@ -117,3 +110,41 @@ def check_calibration(errors, precisions):
     assert mean_error < 3 * se
     assert mean_standardized_error > 1 - 2 * standardized_error_se 
     assert mean_standardized_error < 1 + 2 * standardized_error_se 
+    
+def get_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
+    array = df.values
+    precisions = np.array([1 / (var_theta_hat + var_epsilon_hat / class_size) 
+                          for class_size in array[:, 0]])
+    numerators = precisions * array[:, 1]
+
+    precision_sum = np.sum(precisions)
+    num_sum = np.sum(numerators)
+    # TODO: also return unshrunk va and variance
+    if jackknife:
+        return [(num_sum - n) / (precision_sum - p + 1 / var_mu_hat)
+                for n, p in zip(numerators, precisions)]
+    else:
+        return num_sum / (precision_sum + 1 / var_mu_hat)
+        
+def get_bootstrap_sample(myList):
+    indices = np.random.choice(range(len(myList)), len(myList))
+    return myList[indices]
+        
+#def get_bootstrap_distribution(estimator, data, block_level, n_iters):
+#    # Sort data
+#    data = data.reset_index()
+#    indices = np.argsort(data[block_level].values)
+#    data = data.loc[indices, :].reset_index()
+#    # Find groups of teachers
+#    slices = find_objects(data[block_level].values)
+#    # Convert to numpy array
+#    columns = data.columns
+#    data = data.values
+#    arrays = [data[sl] for sl in slices if sl is not None]
+#    return [estimator(pd.DataFrame(data=get_bootstrap_sample(arrays), columns=columns))
+#            for i in range(n_iters)]
+
+#def get_bootstrap_se(estimator, data, block_level, n_iters):
+#    distribution = get_bootstrap_distribution(estimator, data, block_level, n_iters)
+#    theta_hat = np.mean(distribution)
+#    return np.sum([(elt - theta_hat)**2 for elt in distribution])/(len(distribution) - 1)

@@ -1,46 +1,54 @@
-from multiprocessing import Pool as ThreadPool
+from multiprocessing import Pool, cpu_count
 from va_functions import *
-from two_type_covariance import calculate_covariances
-import copy
-    
-## VA for just one teacher   
-def get_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
-    df = copy.copy(df)
-    if not jackknife:
-        data = [[df['teacher'].values[0], 0, 0, 0], [df['teacher'].values[0], 1, 0, 0]]
-        new_df = pd.DataFrame(data, columns=['teacher', 'type', 'va', 'va other'])
-    for student_type in [0, 1]:
-        df_type = df[df['type'] == student_type]
-        classes = df_type['class id'].values
-        assert len(classes) == len(set(classes))
-        
-        precisions = np.zeros(len(classes))
-        numerators = np.zeros(len(classes))
-        
-        sizes = df_type['size'].values
-        scores = df_type['mean score'].values
-        
-        for k in range(len(classes)):
-            class_size =  sizes[k]
-            precisions[k] = 1 / (var_theta_hat[student_type] + var_epsilon_hat[student_type] / class_size)
-            numerators[k] = precisions[k] * scores[k]
+import random
+import warnings
 
-        precision_sum = np.sum(precisions)
-        num_sum = np.sum(numerators)
-        
-        if jackknife:
-            va = np.zeros(len(classes))
-            for k in range(len(classes)):
-                va[k] = (num_sum-numerators[k]) * var_mu_hat[student_type] / ((precision_sum - precisions[k]) * var_mu_hat[student_type] + 1)
-                df.loc[(df['type'] == 1-student_type)&(df['class id'] == classes[k]), 'va other'] = va[k]
-            df.loc[df['type'] == student_type, 'va'] = va
+def estimate_mu_covariances(data):
+    def f(df):
+        if len(df) <= 2:
+            return [0, 0, 0, 0, 0]
         else:
-            va = num_sum * var_mu_hat[student_type] / (precision_sum * var_mu_hat[student_type] + 1)
-            new_df.loc[new_df['type'] == student_type, 'va'] = va
-            new_df.loc[new_df['type'] == 1-student_type, 'va other'] = va
-            
-    return df   
+            df = df.values
+            i, j = random.sample(range(0, len(df), 2), 2)
+            assert df[i, 0] == 0 # check that types are correct
+            assert df[j, 0] == 0
+            assert df[i+1, 0] == 1
+            assert df[j+1, 0] == 1
+
+            score00 = df[i, 1]
+            score01 = df[i+1, 1]
+            score10 = df[j, 1]
+            score11 = df[j+1, 1]
+
+        return [score00*score10, score01*score11, score00*score11+score01*score10, score00*score10+score10*score11, 1]
+
+        
+    estimates = np.array(list(data.groupby('teacher')[['type', 'mean score']].apply(f).values))
+    print(estimates.shape)
+    n = np.sum(estimates[:, 4])
+    # TODO: warning if these are negative
+    cov_mu_00 = np.sum(estimates[:, 0])/n
+    cov_mu_11 = np.sum(estimates[:, 1])/n
+    cov_mu_01 = np.sum(estimates[:, 2])/(2*n)
+    cov_theta_01 = np.sum(estimates[:, 3])/n - cov_mu_01
+    return [cov_mu_00, cov_mu_11], cov_mu_01, cov_theta_01
+
+def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
+    def f(df): # df columns are type, size, mean score
+        type_ = int(df['type'].values[0])
+        return get_va(df, var_theta_hat[type_], var_epsilon_hat[type_], var_mu_hat[type_], jackknife)
+        
+    if jackknife:
+        results = df.groupby(('teacher', 'type'))[['size', 'mean score', 'type']].apply(f)
+        df.loc[:, 'va'] = np.hstack(results)
+    else:
+        results = pd.DataFrame(df.groupby(('teacher', 'type'))[['size', 'mean score', 'type']].apply(f)).reset_index()
+        results.columns = ['teacher', 'type', 'va']
+        df = pd.merge(df, results)
+
+    return df
     
+
 def get_phi_coefficients(scores, sizes, var_mu, var_theta, var_epsilon, cov_mu, cov_theta):
     s_00, s_11 = [var_mu[i] + np.dot(sizes[i], sizes[i])*var_theta[i]/np.sum(sizes[i])**2 \
                   + var_epsilon[i]/np.sum(sizes[i]) for i in [0,1]]
@@ -51,6 +59,7 @@ def get_phi_coefficients(scores, sizes, var_mu, var_theta, var_epsilon, cov_mu, 
     
     return [phi_0, phi_1]
     
+# TODO: This really sucks
 # Other way of calculating VA, uses data from both genders
 def get_va_2(df, var_theta_hat, var_epsilon_hat, var_mu_hat, cov_theta_hat, cov_mu_hat):
     years = remove_duplicates(df['year'].values)
@@ -84,49 +93,82 @@ def get_va_2(df, var_theta_hat, var_epsilon_hat, var_mu_hat, cov_theta_hat, cov_
             df.loc[(indices & (df['type'] == 0)), 'va other'] = va[1]
             
     return df
-   
-def get_va_from_teacher_list(input_tuple):
-    data, teacher_list, var_theta_hat, var_epsilon_hat, var_mu_hat, cov_theta_hat, cov_mu_hat, method = input_tuple
-    results = list(np.zeros(len(teacher_list)))
-    if method == 1:
-        for i in range(len(teacher_list)):
-            results[i] = get_va(data[data['teacher'] == teacher_list[i]], var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
-    else:
-        for i in range(len(teacher_list)):
-            results[i] = get_va_2(data[data['teacher'] == teacher_list[i]], var_theta_hat, var_epsilon_hat, var_mu_hat, cov_theta_hat, cov_mu_hat, jackknife)
-
-    return pd.concat(results)
-
     
 ## Returns VA's and important moments
 ## a residual can be specified
 ## Covariates is a list like ['prev score', 'free lunch']
 ## Column names can specify 'class id', 'student id', and 'type'
-def calculate_va(data, covariates, residual = None, moments = None, column_names = None, method = 1, parallel = False, jackknife = True):
+def calculate_va(data, covariates, jackknife, class_type_level_vars = [], residual = None, moments = {}, column_names = None, method = 1):
     assert method in [1,2]
-    
-    moments, class_type_df, teachers = calculate_covariances(data, covariates, residual, moments, column_names)
-    var_theta_hat, var_epsilon_hat, var_mu_hat, cov_theta_hat, cov_mu_hat, corr_mu_hat = \
-        moments['var theta'], moments['var epsilon'], moments['var mu'], moments['cov theta'], moments['cov mu'], moments['corr mu']
-    
-    results = list(np.zeros(len(teachers)))
+    # Fix column names
+    # TODO: do the reverse ting at the end
+    if column_names is not None:
+        data.rename(columns={column_names[k]: k for k in column_names}, inplace=True)
+        if 'type' in column_names and column_names['type'] in covariates:
+            covariates[covariates.index(column_names['type'])] = 'type'
 
-    if parallel:
-        pool = ThreadPool(num_cores)
-        sublists = [(class_type_df, teachers[i::num_cores], var_theta_hat, var_epsilon_hat, var_mu_hat, cov_theta_hat, cov_mu_hat, method) for i in range(num_cores)]
-        results = pool.map(get_va_from_teacher_list, sublists)
-        pool.close()
-        pool.join()
+    for var in ['score', 'student id', 'teacher', 'class id', 'year', 'type']:
+        try:
+            assert var in data.columns
+        except AssertionError:
+            raise Exception(var + ' must be in column names')
+
+    # If a residual was not included, residualize scores
+    if residual is None:
+        data.loc[:, 'residual'], _ = residualize(data, 'score', covariates, 'teacher')
+    else:
+        data.rename(columns={residual: 'residual'}, inplace=True)
+    
+    data = data[data['residual'].notnull()] # Drop students with missing scores   
+    ssr = [np.var(data[data['type'] == i]['residual'].values) for i in [0,1]] # sum of squared residuals
+    
+    # Reduce data to class level
+    # Count number of students in class
+    class_type_level_vars = ['teacher', 'class id', 'type', 'year'] + class_type_level_vars
+    class_type_df = data.groupby(class_type_level_vars)['student id'].count().reset_index()
+    class_type_df.columns = class_type_level_vars + ['size']
+    
+    teachers = remove_duplicates(class_type_df['teacher'].values)
+    
+    # Calculate mean and merge it back into class-level data
+    temp = data.groupby(class_type_level_vars)['residual'].mean().reset_index()
+    temp.columns = class_type_level_vars + ['mean score']
+    class_type_df = pd.merge(class_type_df, temp)
+    temp = data.groupby(class_type_level_vars)['residual'].var().reset_index()
+    temp.columns = class_type_level_vars + ['var']
+    class_type_df = pd.merge(class_type_df, temp)
+
+    assert len(class_type_df.index) > 0
+    
+    if 'var epsilon' in moments:
+        var_epsilon_hat = moments['var epsilon']
+    else:
+        var_epsilon_hat = [estimate_var_epsilon(class_type_df[class_type_df['type']==i]) for i in [0,1]]
+    assert np.array(var_epsilon_hat).shape == (2,)
+    
+    # Estimate TVA variances and covariances
+    var_mu_hat, cov_mu_hat, cov_theta_01 = [moments['var mu'], moments['cov mu'], moments['cov theta']] \
+          if 'var_mu' in moments and 'cov_mu' in moments  and 'cov theta' in moments \
+          else estimate_mu_covariances(class_type_df)
+    
+    assert np.array(var_mu_hat).shape == (2,)
+    assert np.array(cov_mu_hat).shape == ()
+    
+    corr_mu_hat = cov_mu_hat/(var_mu_hat[0]*var_mu_hat[1])**(.5)
+    if not (corr_mu_hat > -1 and corr_mu_hat < 1):
+        warnings.warn('Calculated corr_mu_hat is ' + str(corr_mu_hat) + '; it should be between 0 and 1. Your data may be too small.')
+    
+    var_theta_hat = [ssr[i] - var_mu_hat[i] - var_epsilon_hat[i]
+                     for i in [0, 1]]
+
+    n_obs = len(data['residual'].notnull())
+    
+    if method == 1:
+        class_type_df = get_each_va(class_type_df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
     else:
         for i in range(len(teachers)):
-            if method == 1:
-                results[i] = get_va(class_type_df[class_type_df['teacher'] == teachers[i]], \
-                                    var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
-            else:
-                results[i] = get_va_2(class_type_df[class_type_df['teacher'] == teachers[i]], \
-                                     var_theta_hat, var_epsilon_hat, var_mu_hat, cov_theta_hat, cov_mu_hat)
-            
-    
-    class_type_df = pd.concat(results)
+            results[i] = get_va_2(class_type_df[class_type_df['teacher'] == teachers[i]], \
+                                 var_theta_hat, var_epsilon_hat, var_mu_hat, cov_theta_hat, cov_mu_hat)
+        class_type_df = pd.concat(results)
     
     return [class_type_df, var_mu_hat, corr_mu_hat, var_theta_hat, var_epsilon_hat]
