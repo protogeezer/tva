@@ -1,8 +1,6 @@
 from multiprocessing import cpu_count
-from multiprocessing import Pool as ThreadPool
 from va_functions import *
 import pandas as pd
-import copy
 import warnings
 import random
 
@@ -14,8 +12,7 @@ def estimate_mu_variance(data, n_iters):
             for second in vector[i+1:]:
                 est += first * second
 
-        n = len(vector) * (len(vector) - 1) / 2
-        return est, n
+        return est, len(vector) * (len(vector) - 1) / 2
         
     def get_var_mu_hat(array, quietly=True):
         val = np.sum(array[:, 0]) / np.sum(array[:, 1])
@@ -39,25 +36,20 @@ def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
         
     if jackknife:
         results = df.groupby('teacher')[['size', 'mean score']].apply(f).values
-        print(results)
         df.loc[:, 'va'] = np.hstack(results)
     else:
         results = pd.DataFrame(df.groupby('teacher')[['size', 'mean score']].apply(f).reset_index())
         results.columns = ['teacher', 'va']
         df = pd.merge(df, results)
-    print(df)
+
     return df
 
 # Returns VA's and important moments
 # a residual can be specified
 # Covariates is a list like ['prev score', 'free lunch']
-# moments contains 'var epsilon', 'var mu', 'cov mu', 'var theta', 'cov theta'
 # Column names can specify 'class id', 'student id', and 'teacher'
 # class_level_vars can contain any variables are constant at the class level and will stay in the final data set
-def calculate_va(data, covariates, jackknife, residual=None, moments=None, column_names=None, class_level_vars=['teacher', 'class id'], categorical_controls = None, moments_only = False, n_bootstrap_samples = 1000):
-    ## First, a bunch of data processing
-    if moments is None:
-        moments = {}
+def calculate_va(data, covariates, jackknife, residual=None, column_names=None, class_level_vars=['teacher', 'class id'], categorical_controls = None, moments_only = False, n_bootstrap_samples = 1000):
 
     # Fix column names
     if column_names is not None:
@@ -89,20 +81,14 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
 
     ## Second, calculate a bunch of moments
     # Calculate variance of epsilon
-    if 'var epsilon' in moments:
-        var_epsilon_hat = moments['var epsilon']
-    else:
-        var_epsilon_hat = estimate_var_epsilon(class_df)
+    var_epsilon_hat = estimate_var_epsilon(class_df)
     assert var_epsilon_hat > 0 
 
     # Estimate TVA variances and covariances
-    if 'var mu' in moments:
-        var_mu_hat = moments['var mu']
-    else:
-        var_mu_hat, var_mu_hat_se = estimate_mu_variance(class_df, n_bootstrap_samples)
+    var_mu_hat, var_mu_hat_se = estimate_mu_variance(class_df, n_bootstrap_samples)
 
     # Estimate variance of class-level shocks
-    var_theta_hat = moments.get('var theta', ssr - var_mu_hat - var_epsilon_hat)
+    var_theta_hat = ssr - var_mu_hat - var_epsilon_hat
     if var_theta_hat < 0:
         warnings.warn('Var theta hat is negative. Measured to be ' + str(var_theta_hat))
         var_theta_hat = 0
