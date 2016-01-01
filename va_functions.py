@@ -1,9 +1,8 @@
 import numpy as np
 import numpy.linalg as linalg
 import pandas as pd
-#from hdfe import estimate_coefficients
 
-class NumpyGroupby:
+class Groupby:
     def __init__(self, keys):
         self.unique_keys = frozenset(keys)
         self.set_indices(keys)
@@ -26,9 +25,6 @@ def estimate_var_epsilon(data):
     assert var_epsilon_hat > 0
     return var_epsilon_hat
 
-
-#def get_group_mean(y, keys, unique_keys, group_indices):
-#    return numpy_groupby_apply(y, keys, np.mean, unique_keys, group_indices)
 
 def residualize(df, y_var, x_vars, first_group, other_groups):
     y = df[y_var].values
@@ -141,10 +137,10 @@ def get_beta(y, z_projection, fixed_effects):
     residual = y - np.sum(fixed_effects, axis=1)
     return z_projection @ residual 
    
-def get_fes(y, fixed_effects, index, key, unique_keys, group_indices):
+def get_fes(y, fixed_effects, index, grouped):
     use_fes = list(range(0, index)) + list(range(index + 1, fixed_effects.shape[1]))
     residual =  y - np.sum(fixed_effects[:, use_fes], axis=1)
-    return get_group_mean(residual, key, unique_keys, group_indices)
+    return grouped.apply(residual, lambda x: np.mean(x))
     
 def estimate_coefficients(y, z, categorical_data):
     z_projection = np.linalg.inv(z.T @ z) @ z.T
@@ -152,13 +148,11 @@ def estimate_coefficients(y, z, categorical_data):
     
     # set up data structures
     fixed_effects = np.zeros((n, num_fes))
-    grouped = NumpyGroupby(categorical_data[:, i] for i in range(num_fes))
-    unique_keys = [frozenset(categorical_data[:, i]) for i in range(num_fes)]
-    group_indices = [get_group_indices(categorical_data[:, i], k) for i, k in enumerate(unique_keys)]
+    grouped = [Groupby(categorical_data[:, i]) for i in range(num_fes)]
 
     # initialize fixed effects
     for j in range(num_fes):
-        fixed_effects[:, j] = get_fes(y, fixed_effects, j, categorical_data[:, j], unique_keys[j], group_indices[j])  
+        fixed_effects[:, j] = get_fes(y, fixed_effects, j, grouped[j])  
     # initialize beta
     beta = get_beta(y, z_projection, fixed_effects)
     
@@ -167,17 +161,21 @@ def estimate_coefficients(y, z, categorical_data):
     ssr_initial = np.sum((beta_resid - np.sum(fixed_effects, axis=1))**2)
     current_ssr = ssr_initial
     last_ssr = ssr_initial * 10
+    i = 0
     
     while (last_ssr - current_ssr) / ssr_initial > 10**(-5):
         # first update fixed effects
         for j in range(num_fes):
-            fixed_effects[:, j] = get_fes(beta_resid, fixed_effects, j, categorical_data[:, j], unique_keys[j], group_indices[j])          
+            fixed_effects[:, j] = get_fes(beta_resid, fixed_effects, j, grouped[j])          
         # then update beta
         beta = get_beta(y, z_projection, fixed_effects)
         
         beta_resid = y - z @ beta
         last_ssr = current_ssr
         current_ssr = np.sum((beta_resid - np.sum(fixed_effects, axis=1))**2)
-
+        print(i)
+        print(beta)
+        print((last_ssr - current_ssr) / ssr_initial)
+        i += 1
 
     return beta, fixed_effects

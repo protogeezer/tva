@@ -1,5 +1,3 @@
-from multiprocessing import cpu_count
-from multiprocessing import Pool as ThreadPool
 from va_functions import *
 import pandas as pd
 import copy
@@ -28,13 +26,12 @@ def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
         
     if jackknife:
         results = df.groupby('teacher')[['size', 'mean score']].apply(f).values
-        print(results)
         df.loc[:, 'va'] = np.hstack(results)
     else:
         results = pd.DataFrame(df.groupby('teacher')[['size', 'mean score']].apply(f).reset_index())
         results.columns = ['teacher', 'va']
         df = pd.merge(df, results)
-    print(df)
+
     return df
 
 # Returns VA's and important moments
@@ -43,7 +40,8 @@ def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
 # moments contains 'var epsilon', 'var mu', 'cov mu', 'var theta', 'cov theta'
 # Column names can specify 'class id', 'student id', and 'teacher'
 # class_level_vars can contain any variables are constant at the class level and will stay in the final data set
-def calculate_va(data, covariates, jackknife, residual=None, moments=None, column_names=None, class_level_vars=['teacher', 'class id'], categorical_controls = None, moments_only = False):
+@profile
+def calculate_va(data, covariates, jackknife, residual=None, moments=None, column_names=None, class_level_vars=['teacher', 'class id'], categorical_controls = [], moments_only = False):
     ## First, a bunch of data processing
     if moments is None:
         moments = {}
@@ -54,7 +52,7 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
 
     # If a residual was not included, residualize scores
     if residual is None:
-        data.loc[:, 'residual'], _ = residualize(data, 'score', covariates, 'teacher', categorical_controls)
+        data.loc[:, 'residual'], beta = residualize(data, 'score', covariates, 'teacher', categorical_controls)
     else:
         data.rename(columns={residual: 'residual'}, inplace=True)
 
