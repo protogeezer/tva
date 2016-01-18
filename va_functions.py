@@ -1,6 +1,9 @@
 import numpy as np
 import numpy.linalg as linalg
 import pandas as pd
+import scipy.sparse as sparse
+
+#scipy.sparse.linalg.lsqr
 
 class Groupby:
     def __init__(self, keys):
@@ -25,14 +28,14 @@ def estimate_var_epsilon(data):
     assert var_epsilon_hat > 0
     return var_epsilon_hat
 
-
 def residualize(df, y_var, x_vars, first_group, other_groups):
     y = df[y_var].values
     z = df[x_vars].values
     categorical_data = df[[first_group] + other_groups].values
     beta, fes = estimate_coefficients(y, z, categorical_data)
-    
-    return y - z @ beta - np.sum(fes[:, 1:], axis=1), beta
+    residual = y - z @ beta - np.sum(fes[:, 1:], axis=1)
+    # need to demean residual because FE's are only identified up to a constant
+    return residual - np.mean(residual), beta
 
 
 # Mean 0, variance 1
@@ -73,13 +76,15 @@ def binscatter(x, y, nbins):
     
     bins = np.zeros(nbins)
     y_means = np.zeros(nbins)
+    y_medians = np.zeros(nbins)
     
     for i in range(0, nbins):
         start = len(x) * i / nbins
         end = len(x) * (i+1) / nbins
         bins[i] = np.mean(x[int(start):int(end)])
         y_means[i] = np.mean(y[int(start):int(end)])
-    return bins, y_means 
+        y_medians[i] = np.median(y[int(start):int(end)])
+    return bins, y_means, y_medians
 
 
 def check_calibration(errors, precisions):         
@@ -113,24 +118,6 @@ def get_bootstrap_sample(myList):
     indices = np.random.choice(range(len(myList)), len(myList))
     return myList[indices]
         
-#def get_bootstrap_distribution(estimator, data, block_level, n_iters):
-#    # Sort data
-#    data = data.reset_index()
-#    indices = np.argsort(data[block_level].values)
-#    data = data.loc[indices, :].reset_index()
-#    # Find groups of teachers
-#    slices = find_objects(data[block_level].values)
-#    # Convert to numpy array
-#    columns = data.columns
-#    data = data.values
-#    arrays = [data[sl] for sl in slices if sl is not None]
-#    return [estimator(pd.DataFrame(data=get_bootstrap_sample(arrays), columns=columns))
-#            for i in range(n_iters)]
-
-#def get_bootstrap_se(estimator, data, block_level, n_iters):
-#    distribution = get_bootstrap_distribution(estimator, data, block_level, n_iters)
-#    theta_hat = np.mean(distribution)
-#    return np.sum([(elt - theta_hat)**2 for elt in distribution])/(len(distribution) - 1)
 
 ## Functions for high-dimensional fixed effects
 def get_beta(y, z_projection, fixed_effects):
@@ -140,6 +127,7 @@ def get_beta(y, z_projection, fixed_effects):
 def get_fes(y, fixed_effects, index, grouped):
     use_fes = list(range(0, index)) + list(range(index + 1, fixed_effects.shape[1]))
     residual =  y - np.sum(fixed_effects[:, use_fes], axis=1)
+
     return grouped.apply(residual, lambda x: np.mean(x))
     
 def estimate_coefficients(y, z, categorical_data):
@@ -161,9 +149,8 @@ def estimate_coefficients(y, z, categorical_data):
     ssr_initial = np.sum((beta_resid - np.sum(fixed_effects, axis=1))**2)
     current_ssr = ssr_initial
     last_ssr = ssr_initial * 10
-    i = 0
     
-    while (last_ssr - current_ssr) / ssr_initial > 10**(-5):
+    while (last_ssr - current_ssr) / ssr_initial > 10**(-6):
         # first update fixed effects
         for j in range(num_fes):
             fixed_effects[:, j] = get_fes(beta_resid, fixed_effects, j, grouped[j])          
@@ -173,9 +160,5 @@ def estimate_coefficients(y, z, categorical_data):
         beta_resid = y - z @ beta
         last_ssr = current_ssr
         current_ssr = np.sum((beta_resid - np.sum(fixed_effects, axis=1))**2)
-        print(i)
-        print(beta)
-        print((last_ssr - current_ssr) / ssr_initial)
-        i += 1
 
     return beta, fixed_effects
