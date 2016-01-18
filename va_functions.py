@@ -3,8 +3,6 @@ import numpy.linalg as linalg
 import pandas as pd
 import scipy.sparse as sparse
 
-#scipy.sparse.linalg.lsqr
-
 class Groupby:
     def __init__(self, keys):
         self.unique_keys = frozenset(keys)
@@ -117,7 +115,6 @@ def get_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
 def get_bootstrap_sample(myList):
     indices = np.random.choice(range(len(myList)), len(myList))
     return myList[indices]
-        
 
 ## Functions for high-dimensional fixed effects
 def get_beta(y, z_projection, fixed_effects):

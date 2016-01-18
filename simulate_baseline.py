@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 
+
 def simulate(params):
     np.random.seed()
     num_teachers = params['num teachers']

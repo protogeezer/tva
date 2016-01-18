@@ -3,9 +3,8 @@ sys.path = sys.path + ['/home/lizs/Dropbox/lizs_backup/Documents/tva/algorithm/'
 from va_functions import remove_duplicates
 import numpy as np
 import pandas as pd
-from math import isnan
 
-#@profile
+
 def simulate(params, assignments):
     # unpack parameters
     var_mu, var_theta, var_delta = params['var mu'], params['var theta'], params['var delta']
@@ -35,15 +34,8 @@ def simulate(params, assignments):
     assert len(balanced_panel) == n_districts * T
     # merge in bureaucrats
     balanced_panel = pd.merge(balanced_panel, assignments[['distcode', 'month_id', 'person']], how='left')
-    try:
-        assert len(balanced_panel) == n_districts * T
-    except AssertionError:
-        print(n_districts)
-        print(T)
-        print(len(balanced_panel))
-        print(balanced_panel)
-        assert False
-        
+    assert len(balanced_panel) == n_districts * T
+    
     district_effects = np.random.normal(0, var_delta**.5, n_districts)
     district_effects_vector = np.tile(district_effects, T)
     
@@ -65,8 +57,6 @@ def simulate(params, assignments):
         all_errors[t, :] = current_error
         
     balanced_panel['true va'] = bureaucrat_effects_vector
-    print(np.var([x for x in bureaucrat_effects_vector if not np.isnan(x)]))
-    print('\n')
     balanced_panel['outcome'] = bureaucrat_effects_vector + district_effects_vector + posting_effects_vector + all_errors.flatten()
     return balanced_panel.dropna()
     

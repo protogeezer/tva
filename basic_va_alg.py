@@ -4,7 +4,7 @@ import warnings
 import random
 
 
-def estimate_mu_variance(data):
+def estimate_mu_variance(data, n_iters):
     def f(vector):
         try:
             score_1, score_2 = random.sample(set(vector), 2)
@@ -20,6 +20,7 @@ def estimate_mu_variance(data):
     
     bootstrap_samples = [weighted_mean(get_bootstrap_sample(mu_estimates)) for i in range(1000)]
     return mu_hat, [np.percentile(bootstrap_samples, 2.5), np.percentile(bootstrap_samples, 97.5)]
+
 
 def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
     def f(data):
@@ -38,13 +39,13 @@ def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
 # Returns VA's and important moments
 # a residual can be specified
 # Covariates is a list like ['prev score', 'free lunch']
-# moments contains 'var epsilon', 'var mu', 'cov mu', 'var theta', 'cov theta'
 # Column names can specify 'class id', 'student id', and 'teacher'
 # class_level_vars can contain any variables are constant at the class level and will stay in the final data set
 def calculate_va(data, covariates, jackknife, residual=None, moments=None, column_names=None, class_level_vars=['teacher', 'class id'], categorical_controls = [], moments_only = False):
     ## First, a bunch of data processing
     if moments is None:
         moments = {}
+
 
     # Fix column names
     if column_names is not None:              
@@ -76,10 +77,7 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
 
     ## Second, calculate a bunch of moments
     # Calculate variance of epsilon
-    if 'var epsilon' in moments:
-        var_epsilon_hat = moments['var epsilon']
-    else:
-        var_epsilon_hat = estimate_var_epsilon(class_df)
+    var_epsilon_hat = estimate_var_epsilon(class_df)
     assert var_epsilon_hat > 0 
 
     # Estimate TVA variances and covariances
@@ -90,10 +88,9 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
     if var_mu_hat <= 0:
         warnings.warn('Var mu hat is negative. Measured to be ' + str(var_mu_hat))
         var_mu_hat = 0
-        
 
     # Estimate variance of class-level shocks
-    var_theta_hat = moments.get('var theta', ssr - var_mu_hat - var_epsilon_hat)
+    var_theta_hat = ssr - var_mu_hat - var_epsilon_hat
     if var_theta_hat < 0:
         warnings.warn('Var theta hat is negative. Measured to be ' + str(var_theta_hat))
         var_theta_hat = 0

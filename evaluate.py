@@ -1,48 +1,74 @@
 import pandas as pd
-import basic_va_alg
+import numpy as np
+from basic_va_alg import calculate_va
+from multiprocessing import cpu_count, Pool
+from simulate_baseline import simulate
+import matplotlib.pyplot as plt
+from va_functions import binscatter
 
-# Basic algorithm: Effect is constant within teacher
-directory = '~/Dropbox/lizs_backup/Documents/tva/algorithm/'
-filename = 'baseline_simulated_data'
-output_file = open('output_baseline', 'w')
-data = pd.read_csv(directory+filename+'.csv', sep=',')
-print('number of observations:')
-print(len(data))
-#output_file.write('Number of observations: ' + str(len(data.index)))
+def compute_estimates_once(i):
+    print(i)
+    params = {'sd mu':.0135**.5, 'sd theta':.0295**.5, 'mean class size':20, 'mean classes taught':3, 'num teachers': 1000, 'sd epsilon':.2455**.5, 'beta':[2, 3]}
+    data = simulate(params)
+    data.loc[:, 'year'] = data['class id']
+    return calculate_va(data, ['x1', 'x2'], False, categorical_controls='year', moments_only=True)
 
-# discretize x1  
-data.loc[:, 'x1'] = [int(x > 0) for x in data['x1']] + data['true va']
+n_iters = 4
 
-# Run the algorithm
-data, var_mu_hat, var_theta_hat, var_epsilon_hat, se, n \
-    = basic_va_alg.calculate_va(data, ['x2'], False, column_names={'year':'class id'}, categorical_controls=['x1'])
+num_cores = min(cpu_count(), n_iters)
+pool = Pool(num_cores)
+results = pool.map(compute_estimates_once, range(n_iters))
+pool.close()
+pool.join()
 
-data.to_csv('tva_basic_alg_'+filename)
+results = np.array(results)
 
-# Summary stats that help check if it is working
-output_file.write('\nVariance of epsilon, true: ' + str(.2455))
-output_file.write('\nVariance of epsilon, computed:'+str(var_epsilon_hat))
+np.save('parameter_estimates/baseline_'+sys.argv[1]+'.npy', results)
 
-output_file.write('\n\nVariance of value-added, true: ' + str(.0135))
-output_file.write('\nVariance of value-added, computed:'+str(var_mu_hat))
+############
 
-output_file.write('\n\nSe of variance of value-added: ' + str(se))
+#results = np.load('parameter_estimates/baseline_0.npy')
 
-output_file.write('\n\nVariance of theta, true: ' + str(.0295))
-output_file.write('\nVariance of theta, computed: '+str(var_theta_hat))
+def bins(y, bin_size):
+    return np.arange(min(y), max(y)+bin_size, bin_size)
 
-#output_file.write('\n\nempirical mean of value-added '+str(np.ma.average(data['va'].values)))
-#output_file.write('\nempirical variance of value-added '+str(np.var(data['va'].values)))
-output_file.close()
 
-## Make plots to show that va is correct on average
-#print('about to binscatter')
-#va_bins, predictions = va_functions.binscatter(data['va'], data['true va'], 20)
-#plt.plot(va_bins, predictions)
+def parameter_hist(y, param_name, true_value):
+    bin_size = .001
+    fig, ax = plt.subplots(1)
+    ax.hist(y, bins=bins(y, bin_size))
+    ax.set_title('Estimates of '+param_name)
+    
+    ax.axvline(true_value, color='k', linewidth='3') # true value
+    ax.axvline(np.mean(y), color='r', linewidth='1') # mean
+    # 95% CI of mean
+    se1 = (np.var(y)/len(y))**(.5)
+    ax.axvline(np.mean(y) - 1.96*se1, color='r', linewidth='1')
+    ax.axvline(np.mean(y) + 1.96*se1, color='r', linewidth='1')
+    print('red lines:')
+    print(np.mean(y))
+    print(np.mean(y) - 1.96*se1)
+    print(np.mean(y) + 1.96*se1)
+    # 5th perentile
+    ax.axvline(sorted(y)[int(.05*len(y))], color='g', linewidth='1')
+    # 95th perentile
+    ax.axvline(sorted(y)[int(.95*len(y))], color='g', linewidth='1')
+    print('green lines:')
+    print(sorted(y)[int(.05*len(y))])
+    print(sorted(y)[int(.95*len(y))])
+        
+    fig.savefig('parameter_estimates/'+param_name+'_sim_estimates_ac')
 
-#plt.plot(np.arange(-.3, .3, .1), np.arange(-.3, .3, .1))
+params = {'sd mu':.0135**.5, 'sd theta':.0295**.5, 'mean class size':20, 'mean classes taught':3, 'num teachers': 1000, 'sd epsilon':.2455**.5, 'beta':[2, 3]}
 
-#plt.show()
+parameter_hist(results[:, 0], 'variance of mu', .0135)
+parameter_hist(results[:, 1], 'variance of theta', .0295)
+parameter_hist(results[:, 2], 'variance of epsilon', .2455)
+
+# Test average squared error, normalized by standard deviation
+error = (results[:, 0] - .0135)**2 / results[:, 3]**2
+print(np.mean(error))
+
 
 ## Test confidence interval
 #data.loc[:, 'outside ci'] = [true_va > va + 1.96 * se or true_va < va - 1.96 * se 
