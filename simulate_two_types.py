@@ -1,8 +1,9 @@
+import numpy as np
+import random
+import pandas as pd
+import multiprocessing
+
 def simulate_two_types(sd_epsilon, beta, num_teachers, parameters, parallel=False):
-    import numpy as np
-    import random
-    import pandas as pd
-    import multiprocessing
 
     def generate_one_teacher_data(input_tuple):
         teacher_id, params = input_tuple
@@ -39,9 +40,9 @@ def simulate_two_types(sd_epsilon, beta, num_teachers, parameters, parallel=Fals
         dfs = [generate_one_teacher_data((i, parameters)) for i in range(num_teachers)]
 
     dfs = pd.concat(dfs)
-    dfs['x1'] = [np.random.normal() for i in range(len(dfs))]
-    dfs['x2'] = [np.random.normal() for i in range(len(dfs))]
-    dfs['score'] = dfs['score'] + np.dot(dfs[['x1', 'x2']].as_matrix(), beta) + np.random.normal(0, sd_epsilon, len(dfs))
+    dfs['x1'] = np.random.normal(0, 1, len(dfs))
+    dfs['x2'] = np.random.normal(0, 1, len(dfs))
+    dfs['score'] = dfs['score'] + dfs[['x1', 'x2']].as_matrix() @ beta + np.random.normal(0, sd_epsilon, len(dfs))
 
     return dfs
 

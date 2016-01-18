@@ -1,56 +1,40 @@
 import numpy as np
 import numpy.linalg as linalg
 import pandas as pd
-#from scipy.ndimage.measurements import find_objects
+import scipy.sparse as sparse
+
+class Groupby:
+    def __init__(self, keys):
+        self.unique_keys = frozenset(keys)
+        self.set_indices(keys)
+        
+    def set_indices(self, keys):
+        self.indices = {k:[] for k in self.unique_keys}
+        for i, k in enumerate(keys):
+            self.indices[k].append(i)
+            
+    def apply(self, values, function):
+        result = np.zeros(len(values))
+        for k in self.unique_keys:
+            result[self.indices[k]] = function(values[self.indices[k]])
+        return result
+
 
 def estimate_var_epsilon(data):
     data = data[data['var'].notnull()]
     var_epsilon_hat = np.dot(data['var'].values, data['size'].values)/np.sum(data['size'])
     assert var_epsilon_hat > 0
     return var_epsilon_hat
-    
 
-# Demeaning with one or two fixed effects
-def fe_demean(df, var_name, first_group, second_group = None):
-    def f(vector): # demean within each group
-        v = vector.values
-        return v - np.mean(v)
-        
-    if second_group is None:
-        return np.hstack(df.groupby(first_group)[var_name].apply(f).values)
-    else:
-        y = df[var_name].values
-        y_demeaned_first  = np.hstack(df.groupby(first_group)[var_name].apply(f).values)
-        y_demeaned_second = np.hstack(df.groupby(second_group)[var_name].apply(f).values)
-        return y - y_demeaned_first - y_demeaned_second + np.mean(y)
+def residualize(df, y_var, x_vars, first_group, other_groups):
+    y = df[y_var].values
+    z = df[x_vars].values
+    categorical_data = df[[first_group] + other_groups].values
+    beta, fes = estimate_coefficients(y, z, categorical_data)
+    residual = y - z @ beta - np.sum(fes[:, 1:], axis=1)
+    # need to demean residual because FE's are only identified up to a constant
+    return residual - np.mean(residual), beta
 
-
-# Calculates beta using y_name = x_names * beta + group_name (dummy) + dummy_control_name
-# Returns               y_name - x_names * beta - dummy_control_name
-def residualize(df, y_name, x_names, first_group, second_group = None):
-    if len(x_names) == 0 and second_group is None:
-        return df[y_name] - np.mean(df[y_name]), None
-    elif len(x_names) == 0:
-        return fe_demean(df, y_name, second_group), None
-    else:
-        # Drop missing values to calculate beta
-        df_no_null = df[[y_name, first_group] + x_names].dropna() if second_group is None \
-                     else df[[y_name, first_group, second_group] + x_names].dropna()
-
-        Y = fe_demean(df_no_null, y_name, first_group, second_group)
-        X = np.transpose([fe_demean(df_no_null, x, first_group, second_group)
-                      for x in x_names])
-        try:
-            beta = linalg.lstsq(X, Y)[0]
-        except ValueError:
-            raise Exception('Your covariates may be too large relative to the length of your data. This may happen after dropping many null values.')
-        
-        if second_group is None:
-            return df[y_name] - np.dot(df[x_names], beta), beta 
-        else:
-            x_demeaned = np.transpose([fe_demean(df, x, second_group) + np.mean(df[x]) for x in x_names])
-            return fe_demean(df, y_name, second_group) - np.dot(x_demeaned, beta), beta
-           
 
 # Mean 0, variance 1
 def normalize(vector):
@@ -90,13 +74,15 @@ def binscatter(x, y, nbins):
     
     bins = np.zeros(nbins)
     y_means = np.zeros(nbins)
+    y_medians = np.zeros(nbins)
     
     for i in range(0, nbins):
         start = len(x) * i / nbins
         end = len(x) * (i+1) / nbins
         bins[i] = np.mean(x[int(start):int(end)])
         y_means[i] = np.mean(y[int(start):int(end)])
-    return bins, y_means 
+        y_medians[i] = np.median(y[int(start):int(end)])
+    return bins, y_means, y_medians
 
 
 def check_calibration(errors, precisions):         
@@ -129,22 +115,47 @@ def get_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
 def get_bootstrap_sample(myList):
     indices = np.random.choice(range(len(myList)), len(myList))
     return myList[indices]
-        
-#def get_bootstrap_distribution(estimator, data, block_level, n_iters):
-#    # Sort data
-#    data = data.reset_index()
-#    indices = np.argsort(data[block_level].values)
-#    data = data.loc[indices, :].reset_index()
-#    # Find groups of teachers
-#    slices = find_objects(data[block_level].values)
-#    # Convert to numpy array
-#    columns = data.columns
-#    data = data.values
-#    arrays = [data[sl] for sl in slices if sl is not None]
-#    return [estimator(pd.DataFrame(data=get_bootstrap_sample(arrays), columns=columns))
-#            for i in range(n_iters)]
 
-#def get_bootstrap_se(estimator, data, block_level, n_iters):
-#    distribution = get_bootstrap_distribution(estimator, data, block_level, n_iters)
-#    theta_hat = np.mean(distribution)
-#    return np.sum([(elt - theta_hat)**2 for elt in distribution])/(len(distribution) - 1)
+## Functions for high-dimensional fixed effects
+def get_beta(y, z_projection, fixed_effects):
+    residual = y - np.sum(fixed_effects, axis=1)
+    return z_projection @ residual 
+   
+def get_fes(y, fixed_effects, index, grouped):
+    use_fes = list(range(0, index)) + list(range(index + 1, fixed_effects.shape[1]))
+    residual =  y - np.sum(fixed_effects[:, use_fes], axis=1)
+
+    return grouped.apply(residual, lambda x: np.mean(x))
+    
+def estimate_coefficients(y, z, categorical_data):
+    z_projection = np.linalg.inv(z.T @ z) @ z.T
+    n, num_fes = categorical_data.shape
+    
+    # set up data structures
+    fixed_effects = np.zeros((n, num_fes))
+    grouped = [Groupby(categorical_data[:, i]) for i in range(num_fes)]
+
+    # initialize fixed effects
+    for j in range(num_fes):
+        fixed_effects[:, j] = get_fes(y, fixed_effects, j, grouped[j])  
+    # initialize beta
+    beta = get_beta(y, z_projection, fixed_effects)
+    
+    # needed for loop
+    beta_resid = y - z @ beta
+    ssr_initial = np.sum((beta_resid - np.sum(fixed_effects, axis=1))**2)
+    current_ssr = ssr_initial
+    last_ssr = ssr_initial * 10
+    
+    while (last_ssr - current_ssr) / ssr_initial > 10**(-6):
+        # first update fixed effects
+        for j in range(num_fes):
+            fixed_effects[:, j] = get_fes(beta_resid, fixed_effects, j, grouped[j])          
+        # then update beta
+        beta = get_beta(y, z_projection, fixed_effects)
+        
+        beta_resid = y - z @ beta
+        last_ssr = current_ssr
+        current_ssr = np.sum((beta_resid - np.sum(fixed_effects, axis=1))**2)
+
+    return beta, fixed_effects
