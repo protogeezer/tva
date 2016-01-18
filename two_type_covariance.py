@@ -3,37 +3,6 @@ from va_functions import *
 import warnings
 import random
 
-def estimate_mu_covariances(data):
-    @profile
-    def f(df):
-        if len(df) <= 2:
-            return [0, 0, 0, 0, 0]
-        else:
-            df = df.values
-            i, j = random.sample(range(0, len(df), 2), 2)
-            assert df[i, 0] == 0 # check that types are correct
-            assert df[j, 0] == 0
-            assert df[i+1, 0] == 1
-            assert df[j+1, 0] == 1
-
-            score00 = df[i, 1]
-            score01 = df[i+1, 1]
-            score10 = df[j, 1]
-            score11 = df[j+1, 1]
-
-        return [score00*score10, score01*score11, score00*score11+score01*score10, score00*score10+score10*score11, 1]
-
-        
-    estimates = np.array(list(data.groupby('teacher')[['type', 'mean score']].apply(f).values))
-    print(estimates.shape)
-    n = np.sum(estimates[:, 4])
-    # TODO: warning if these are negative
-    cov_mu_00 = np.sum(estimates[:, 0])/n
-    cov_mu_11 = np.sum(estimates[:, 1])/n
-    cov_mu_01 = np.sum(estimates[:, 2])/(2*n)
-    cov_theta_01 = np.sum(estimates[:, 3])/n - cov_mu_01
-    return [cov_mu_00, cov_mu_11], cov_mu_01, cov_theta_01
-
 ## Ben thinks Liz is the bestest ever
 
 ## Returns VA's and important moments
@@ -97,10 +66,6 @@ def calculate_covariances(data, covariates, residual = None, moments = None, col
     corr_mu_hat = cov_mu_hat/(var_mu_hat[0]*var_mu_hat[1])**(.5)
     if not (corr_mu_hat > -1 and corr_mu_hat < 1):
         warnings.warn('Calculated corr_mu_hat is ' + str(corr_mu_hat) + '; it should be between 0 and 1. Your data may be too small.')
-        print('cov_mu_hat')
-        print(cov_mu_hat)
-        print('var mu hat')
-        print(var_mu_hat)
     
     var_theta_hat = [ssr[i] - var_mu_hat[i] - var_epsilon_hat[i]
                      for i in [0, 1]]
