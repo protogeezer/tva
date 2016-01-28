@@ -1,3 +1,4 @@
+import sys
 import pandas as pd
 import numpy as np
 from basic_va_alg import calculate_va
@@ -11,9 +12,10 @@ def compute_estimates_once(i):
     params = {'sd mu':.0135**.5, 'sd theta':.0295**.5, 'mean class size':20, 'mean classes taught':3, 'num teachers': 1000, 'sd epsilon':.2455**.5, 'beta':[2, 3]}
     data = simulate(params)
     data.loc[:, 'year'] = data['class id']
-    return calculate_va(data, ['x1', 'x2'], False, categorical_controls='year', moments_only=True)
+    #return calculate_va(data, ['x1', 'x2'], False, moments_only=True)
+    return calculate_va(data, ['x1', 'x2'], False, categorical_controls=['year'], moments_only=True)
 
-n_iters = 4
+n_iters = 16
 
 num_cores = min(cpu_count(), n_iters)
 pool = Pool(num_cores)
@@ -65,9 +67,6 @@ parameter_hist(results[:, 0], 'variance of mu', .0135)
 parameter_hist(results[:, 1], 'variance of theta', .0295)
 parameter_hist(results[:, 2], 'variance of epsilon', .2455)
 
-# Test average squared error, normalized by standard deviation
-error = (results[:, 0] - .0135)**2 / results[:, 3]**2
-print(np.mean(error))
 
 
 ## Test confidence interval

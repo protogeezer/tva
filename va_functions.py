@@ -3,37 +3,42 @@ import numpy.linalg as linalg
 import pandas as pd
 import scipy.sparse as sparse
 
-class Groupby:
-    def __init__(self, keys):
-        self.unique_keys = frozenset(keys)
-        self.set_indices(keys)
-        
-    def set_indices(self, keys):
-        self.indices = {k:[] for k in self.unique_keys}
-        for i, k in enumerate(keys):
-            self.indices[k].append(i)
-            
-    def apply(self, values, function):
-        result = np.zeros(len(values))
-        for k in self.unique_keys:
-            result[self.indices[k]] = function(values[self.indices[k]])
-        return result
-
 
 def estimate_var_epsilon(data):
     data = data[data['var'].notnull()]
     var_epsilon_hat = np.dot(data['var'].values, data['size'].values)/np.sum(data['size'])
     assert var_epsilon_hat > 0
     return var_epsilon_hat
+    
+# Demeaning with one fixed effect
+def fe_demean(df, var_name, group):
+    def f(vector): # demean within each group
+        v = vector.values
+        return v - np.mean(v)
+        
+    return np.hstack(df.groupby(group)[var_name].apply(f).values)
 
-def residualize(df, y_var, x_vars, first_group, other_groups):
-    y = df[y_var].values
-    z = df[x_vars].values
-    categorical_data = df[[first_group] + other_groups].values
-    beta, fes = estimate_coefficients(y, z, categorical_data)
-    residual = y - z @ beta - np.sum(fes[:, 1:], axis=1)
-    # need to demean residual because FE's are only identified up to a constant
-    return residual - np.mean(residual), beta
+# Calculates beta using y_name = x_names * beta + group_name (dummy) + dummy_control_name
+# Returns               y_name - x_names * beta - dummy_control_name
+def residualize(df, y_name, x_names, first_group, second_groups = None):
+    y = fe_demean(df, y_name, first_group)
+    if len(x_names) == 0 and second_groups is None:
+        return y, []
+    else:
+        if second_groups is None:
+            x = df[x_names].values
+        else:
+            # Need to create dummy variables
+            dummies = pd.get_dummies(df, columns=second_groups)
+            keep_cols = []
+            for col in second_groups:
+                keep_cols += [elt for elt in dummies.columns if col in elt]
+                
+            x = np.hstack((df[x_names].values, dummies[keep_cols]))
+            
+        beta = linalg.lstsq(x, y)[0]
+        resid = df[y_name] - x @ beta
+        return resid - np.mean(resid), beta
 
 
 # Mean 0, variance 1
@@ -115,47 +120,3 @@ def get_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
 def get_bootstrap_sample(myList):
     indices = np.random.choice(range(len(myList)), len(myList))
     return myList[indices]
-
-## Functions for high-dimensional fixed effects
-def get_beta(y, z_projection, fixed_effects):
-    residual = y - np.sum(fixed_effects, axis=1)
-    return z_projection @ residual 
-   
-def get_fes(y, fixed_effects, index, grouped):
-    use_fes = list(range(0, index)) + list(range(index + 1, fixed_effects.shape[1]))
-    residual =  y - np.sum(fixed_effects[:, use_fes], axis=1)
-
-    return grouped.apply(residual, lambda x: np.mean(x))
-    
-def estimate_coefficients(y, z, categorical_data):
-    z_projection = np.linalg.inv(z.T @ z) @ z.T
-    n, num_fes = categorical_data.shape
-    
-    # set up data structures
-    fixed_effects = np.zeros((n, num_fes))
-    grouped = [Groupby(categorical_data[:, i]) for i in range(num_fes)]
-
-    # initialize fixed effects
-    for j in range(num_fes):
-        fixed_effects[:, j] = get_fes(y, fixed_effects, j, grouped[j])  
-    # initialize beta
-    beta = get_beta(y, z_projection, fixed_effects)
-    
-    # needed for loop
-    beta_resid = y - z @ beta
-    ssr_initial = np.sum((beta_resid - np.sum(fixed_effects, axis=1))**2)
-    current_ssr = ssr_initial
-    last_ssr = ssr_initial * 10
-    
-    while (last_ssr - current_ssr) / ssr_initial > 10**(-6):
-        # first update fixed effects
-        for j in range(num_fes):
-            fixed_effects[:, j] = get_fes(beta_resid, fixed_effects, j, grouped[j])          
-        # then update beta
-        beta = get_beta(y, z_projection, fixed_effects)
-        
-        beta_resid = y - z @ beta
-        last_ssr = current_ssr
-        current_ssr = np.sum((beta_resid - np.sum(fixed_effects, axis=1))**2)
-
-    return beta, fixed_effects

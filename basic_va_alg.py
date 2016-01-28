@@ -35,13 +35,16 @@ def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
         df = pd.merge(df, results)
 
     return df
+    
 
 # Returns VA's and important moments
 # a residual can be specified
 # Covariates is a list like ['prev score', 'free lunch']
 # Column names can specify 'class id', 'student id', and 'teacher'
 # class_level_vars can contain any variables are constant at the class level and will stay in the final data set
-def calculate_va(data, covariates, jackknife, residual=None, moments=None, column_names=None, class_level_vars=['teacher', 'class id'], categorical_controls = [], moments_only = False):
+def calculate_va(data, covariates, jackknife, residual=None, moments=None, 
+                 column_names=None, class_level_vars=['teacher', 'class id'], 
+                 categorical_controls = None, moments_only = False):
     ## First, a bunch of data processing
     if moments is None:
         moments = {}
@@ -84,7 +87,7 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
     if 'var mu' in moments:
         var_mu_hat = moments['var mu']
     else:
-        var_mu_hat, var_mu_hat_ci = estimate_mu_variance(class_df)
+        var_mu_hat, var_mu_hat_ci = estimate_mu_variance(class_df, 1000)
     if var_mu_hat <= 0:
         warnings.warn('Var mu hat is negative. Measured to be ' + str(var_mu_hat))
         var_mu_hat = 0
@@ -96,7 +99,7 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
         var_theta_hat = 0
 
     if moments_only:
-        return var_mu_hat, var_theta_hat, var_epsilon_hat, var_mu_hat_ci
+        return var_mu_hat, var_theta_hat, var_epsilon_hat
         
     results = get_each_va(class_df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
     if column_names is not None:
