@@ -53,12 +53,17 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None,
     # Fix column names
     if column_names is not None:              
         data.rename(columns=column_names, inplace=True)
+        class_level_vars = [column_names[elt] for elt in class_level_vars]
+        if categorical_controls is not None:
+            categorical_controls = [column_names[elt] 
+                                    for elt in categorical_controls]
 
     # If a residual was not included, residualize scores
     if residual is None:
-        data.loc[:, 'residual'], beta = residualize(data, 'score', covariates, 'teacher', categorical_controls)
+        data.loc[:, 'residual'], beta = residualize(data, 'score', covariates,
+                                                'teacher', categorical_controls)
     else:
-        data.rename(columns={residual: 'residual'}, inplace=True)
+        data.rename(columns={residual: 'residual'}, inplace=True) 
 
     data = data[data['residual'].notnull()]  # Drop students with missing scores
     assert len(data) > 0
