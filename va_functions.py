@@ -101,7 +101,8 @@ def check_calibration(errors, precisions):
     assert mean_error < 3 * se
     assert mean_standardized_error > 1 - 2 * standardized_error_se 
     assert mean_standardized_error < 1 + 2 * standardized_error_se 
-    
+
+# Now returns [mu-hat, variance of mu-hat]
 def get_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
     array = df.values
     precisions = np.array([1 / (var_theta_hat + var_epsilon_hat / class_size) 
@@ -112,10 +113,28 @@ def get_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
     num_sum = np.sum(numerators)
     # TODO: also return unshrunk va and variance
     if jackknife:
-        return [(num_sum - n) / (precision_sum - p + 1 / var_mu_hat)
-                for n, p in zip(numerators, precisions)]
+        denominators = np.array([precision_sum - p for p in precisions]) \
+                 + 1 / var_mu_hat
+        return [[(num_sum - n) / d, 1 / d]
+                          for n, d in zip(numerators, denominators)]
     else:
-        return num_sum / (precision_sum + 1 / var_mu_hat)
+        denominator = precision_sum + 1 / var_mu_hat
+        return [num_sum / denominator, 1 / denominator]
+    
+#def get_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
+#    array = df.values
+#    precisions = np.array([1 / (var_theta_hat + var_epsilon_hat / class_size) 
+#                          for class_size in array[:, 0]])
+#    numerators = precisions * array[:, 1]
+
+#    precision_sum = np.sum(precisions)
+#    num_sum = np.sum(numerators)
+#    # TODO: also return unshrunk va and variance
+#    if jackknife:
+#        return [(num_sum - n) / (precision_sum - p + 1 / var_mu_hat)
+#                for n, p in zip(numerators, precisions)]
+#    else:
+#        return num_sum / (precision_sum + 1 / var_mu_hat)
         
 def get_bootstrap_sample(myList):
     indices = np.random.choice(range(len(myList)), len(myList))

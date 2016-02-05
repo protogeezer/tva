@@ -27,11 +27,11 @@ def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
         return get_va(data, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
         
     if jackknife:
-        results = df.groupby('teacher')[['size', 'mean score']].apply(f).values
-        df.loc[:, 'va'] = np.hstack(results)
+        results = np.vstack(df.groupby('teacher')[['size', 'mean score']].apply(f).values)
+        df['va'], df['variance'] = zip(*results)
     else:
         results = pd.DataFrame(df.groupby('teacher')[['size', 'mean score']].apply(f).reset_index())
-        results.columns = ['teacher', 'va']
+        results.columns = ['teacher', 'va', 'variance']
         df = pd.merge(df, results)
 
     return df
@@ -105,9 +105,12 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None,
 
     if moments_only:
         return var_mu_hat, var_theta_hat, var_epsilon_hat
-        
-    results = get_each_va(class_df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
-    if column_names is not None:
-        results.rename(columns={column_names[key]:key for key in column_names}, inplace=True)
+    
+    if var_mu_hat > 0: # Don't get teacher-level results if zero variance
+        results = get_each_va(class_df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
+        if column_names is not None:
+            results.rename(columns={column_names[key]:key for key in column_names}, inplace=True)
+    else:
+        results = None
     
     return results, var_mu_hat, var_theta_hat, var_epsilon_hat, var_mu_hat_ci
