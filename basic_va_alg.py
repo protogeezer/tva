@@ -5,12 +5,19 @@ import random
 
 
 def estimate_mu_variance(data, n_iters):
+#    def f(vector):
+#        try:
+#            score_1, score_2 = random.sample(set(vector), 2)
+#            return [score_1 * score_2, 1]
+#        except ValueError:
+#            return [0, 0]
     def f(vector):
-        try:
-            score_1, score_2 = random.sample(set(vector), 2)
-            return [score_1 * score_2, 1]
-        except ValueError:
-            return [0, 0]
+        vector = vector.values
+        val = 0
+        for i in range(1, len(vector)):
+            val += vector[i:] @ vector[:-i]
+
+        return[val, len(vector) * (len(vector) -1) /2]
             
     def weighted_mean(arr):
         return np.sum(arr[:, 0]) / np.sum(arr[:, 1])
