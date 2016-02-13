@@ -120,21 +120,6 @@ def get_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
     else:
         denominator = precision_sum + 1 / var_mu_hat
         return [num_sum / denominator, 1 / denominator]
-    
-#def get_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
-#    array = df.values
-#    precisions = np.array([1 / (var_theta_hat + var_epsilon_hat / class_size) 
-#                          for class_size in array[:, 0]])
-#    numerators = precisions * array[:, 1]
-
-#    precision_sum = np.sum(precisions)
-#    num_sum = np.sum(numerators)
-#    # TODO: also return unshrunk va and variance
-#    if jackknife:
-#        return [(num_sum - n) / (precision_sum - p + 1 / var_mu_hat)
-#                for n, p in zip(numerators, precisions)]
-#    else:
-#        return num_sum / (precision_sum + 1 / var_mu_hat)
         
 def get_bootstrap_sample(myList):
     indices = np.random.choice(range(len(myList)), len(myList))
