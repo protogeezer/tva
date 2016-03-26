@@ -15,7 +15,7 @@ def compute_estimates_once(i):
     #return calculate_va(data, ['x1', 'x2'], False, moments_only=True)
     return calculate_va(data, ['x1', 'x2'], False, categorical_controls=['year'], moments_only=True)
 
-n_iters = 16
+n_iters = 14
 
 num_cores = min(cpu_count(), n_iters)
 pool = Pool(num_cores)
