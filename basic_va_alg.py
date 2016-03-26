@@ -1,16 +1,9 @@
 from va_functions import *
 import pandas as pd
 import warnings
-import random
 
 
 def estimate_mu_variance(data, n_iters):
-#    def f(vector):
-#        try:
-#            score_1, score_2 = random.sample(set(vector), 2)
-#            return [score_1 * score_2, 1]
-#        except ValueError:
-#            return [0, 0]
     def f(vector):
         vector = vector.values
         val = 0
@@ -36,10 +29,10 @@ def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
     if jackknife:
         results = np.vstack(df.groupby('teacher')[['size', 'mean score']].apply(f).values)
         df['va'], df['variance'] = zip(*results)
-    else:
-        results = pd.DataFrame(df.groupby('teacher')[['size', 'mean score']].apply(f).reset_index())
-        results.columns = ['teacher', 'va', 'variance']
-        df = pd.merge(df, results)
+    else:        
+        results = np.vstack(df.groupby('teacher')[['size', 'mean score']].apply(f).values)
+        df = df.groupby('teacher').size().reset_index()
+        df['va'], df['variance'] = zip(*results)
 
     return df
     
@@ -55,7 +48,6 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None,
     ## First, a bunch of data processing
     if moments is None:
         moments = {}
-
 
     # Fix column names
     if column_names is not None:              
@@ -83,8 +75,10 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None,
     class_df.columns = class_level_vars + ['size']
 
     # Calculate mean and merge it back into class-level data
-    class_df.loc[:, 'mean score'] = data.groupby(class_level_vars)['residual'].mean().values
-    class_df.loc[:, 'var'] = data.groupby(class_level_vars)['residual'].var().values
+    class_df.loc[:, 'mean score'] = \
+                        data.groupby(class_level_vars)['residual'].mean().values
+    class_df.loc[:, 'var'] = \
+                         data.groupby(class_level_vars)['residual'].var().values
     assert len(class_df) > 0
     
     if jackknife: # Drop teachers teaching only one class
@@ -93,25 +87,24 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None,
     ## Second, calculate a bunch of moments
     # Calculate variance of epsilon
     var_epsilon_hat = estimate_var_epsilon(class_df)
-    assert var_epsilon_hat > 0 
 
     # Estimate TVA variances and covariances
     if 'var mu' in moments:
         var_mu_hat = moments['var mu']
     else:
         var_mu_hat, var_mu_hat_ci = estimate_mu_variance(class_df, 1000)
-    if var_mu_hat <= 0:
-        warnings.warn('Var mu hat is negative. Measured to be ' + str(var_mu_hat))
-        var_mu_hat = 0
 
     # Estimate variance of class-level shocks
     var_theta_hat = ssr - var_mu_hat - var_epsilon_hat
     if var_theta_hat < 0:
         warnings.warn('Var theta hat is negative. Measured to be ' + str(var_theta_hat))
         var_theta_hat = 0
+        
+    if var_mu_hat <= 0:
+        warnings.warn('Var mu hat is negative. Measured to be ' + str(var_mu_hat))
 
     if moments_only:
-        return var_mu_hat, var_theta_hat, var_epsilon_hat
+        return var_mu_hat, var_theta_hat, var_epsilon_hat, var_mu_hat_ci
     
     if var_mu_hat > 0: # Don't get teacher-level results if zero variance
         results = get_each_va(class_df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
