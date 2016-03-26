@@ -21,26 +21,33 @@ def fe_demean(df, var_name, group):
 # Calculates beta using y_name = x_names * beta + group_name (dummy) + dummy_control_name
 # Returns               y_name - x_names * beta - dummy_control_name
 def residualize(df, y_name, x_names, first_group, second_groups = None):
-    y = fe_demean(df, y_name, first_group)
-    if len(x_names) == 0 and second_groups is None:
-        return y, []
+    y = df[y_name].values
+    
+    if len(x_names) == 0 and second_groups is None: # don't do anything
+        return y - np.mean(y), [np.mean(y)]
     else:
-        if second_groups is None:
-            x = df[x_names].values
-        else:
-            # Need to create dummy variables
-            dummies = pd.get_dummies(df, columns=second_groups)
-            keep_cols = []
+        x = df[x_names].values
+        x_demeaned = np.array([fe_demean(df, x, first_group) for x in x_names])
+        
+        if second_groups is not None: # If extra FE, create dummies
+            dummy_df = pd.get_dummies(df, columns=second_groups)
+            dummy_cols = []
             for col in second_groups:
-                keep_cols += [elt for elt in dummies.columns if col in elt]
+                dummy_cols += [elt for elt in dummy_df.columns if col in elt]
                 
-            x = np.hstack((df[x_names].values, dummies[keep_cols]))
-            
-        beta = linalg.lstsq(x, y)[0]
-        resid = df[y_name] - x @ beta
+            dummies = dummy_df[dummy_cols].values
+                                
+            if len(x_names) > 0:
+                x = np.hstack((x, dummies))
+                x_demeaned = np.hstack((x_demeaned, dummies))
+            else:
+                x = dummies
+                x_demeaned = dummies
+
+        beta = linalg.lstsq(x_demeaned, y)[0]
+        resid = y - x @ beta
         return resid - np.mean(resid), beta
-
-
+                
 # Mean 0, variance 1
 def normalize(vector):
     vector = vector - np.mean(vector)
