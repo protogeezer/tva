@@ -31,7 +31,7 @@ def residualize(df, y_var, x_vars, first_group, other_groups):
     z = df[x_vars].values
     categorical_data = df[[first_group] + other_groups].values
     beta, fes = estimate_coefficients(y, z, categorical_data)
-    residual = y - z @ beta - np.sum(fes[:, 1:], axis=1)
+    residual = y - np.dot(z , beta) - np.sum(fes[:, 1:], axis=1)
     # need to demean residual because FE's are only identified up to a constant
     return residual - np.mean(residual), beta
 
@@ -119,7 +119,7 @@ def get_bootstrap_sample(myList):
 ## Functions for high-dimensional fixed effects
 def get_beta(y, z_projection, fixed_effects):
     residual = y - np.sum(fixed_effects, axis=1)
-    return z_projection @ residual 
+    return np.dot(z_projection, residual)
    
 def get_fes(y, fixed_effects, index, grouped):
     use_fes = list(range(0, index)) + list(range(index + 1, fixed_effects.shape[1]))
@@ -128,7 +128,7 @@ def get_fes(y, fixed_effects, index, grouped):
     return grouped.apply(residual, lambda x: np.mean(x))
     
 def estimate_coefficients(y, z, categorical_data):
-    z_projection = np.linalg.inv(z.T @ z) @ z.T
+    z_projection = np.dot(np.linalg.inv(np.dot(z.T, z)), z.T)
     n, num_fes = categorical_data.shape
     
     # set up data structures
@@ -142,7 +142,7 @@ def estimate_coefficients(y, z, categorical_data):
     beta = get_beta(y, z_projection, fixed_effects)
     
     # needed for loop
-    beta_resid = y - z @ beta
+    beta_resid = y - np.dot(z, beta)
     ssr_initial = np.sum((beta_resid - np.sum(fixed_effects, axis=1))**2)
     current_ssr = ssr_initial
     last_ssr = ssr_initial * 10
@@ -154,7 +154,7 @@ def estimate_coefficients(y, z, categorical_data):
         # then update beta
         beta = get_beta(y, z_projection, fixed_effects)
         
-        beta_resid = y - z @ beta
+        beta_resid = y - np.dot(z, beta)
         last_ssr = current_ssr
         current_ssr = np.sum((beta_resid - np.sum(fixed_effects, axis=1))**2)
 
