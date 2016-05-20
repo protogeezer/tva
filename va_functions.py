@@ -45,7 +45,7 @@ def residualize(df, y_name, x_names, first_group, second_groups = None):
                 x_demeaned = dummies
 
         beta = linalg.lstsq(x_demeaned, y)[0]
-        resid = y - x @ beta
+        resid = y - np.dot(x, beta)
         return resid - np.mean(resid), beta
                 
 # Mean 0, variance 1
