@@ -10,6 +10,10 @@ Creates simulated data for testing VA algorithm or doing permutation tests.
 Preserved from initial data:
 -- Which state bureaucrat a bureaucrat is in.
 -- How long each bureaucrat has been in her current district.
+-- Whether the bureaucrat is present in this year.
+
+Not preserved:
+-- *Which* district within the state the bureaucrat is in.
 """
 
 # TODO: Deal with consecutiveness. A posting is all years a bureaucrat works in a certian district.
@@ -22,13 +26,6 @@ def create_switch_status(df):
                    in zip(districts, np.concatenate(([0], districts[:-1])))]
     return df    
 
-# df holds data for one state in one year
-def shuffle_bureaucrats(df):
-    switch_indices = pd.Series(df['switch status'] == 1)
-    switch_people = df.loc[switch_indices, 'person'].values
-    shuffle(switch_people)
-    df.loc[switch_indices, 'person'] = switch_people
-    return df
     
 def find_swappers(df):
     switch_indices = pd.Series(df['switch status'] == 1)

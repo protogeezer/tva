@@ -12,6 +12,7 @@ def estimate_var_epsilon(data):
     
 # Demeaning with one fixed effect
 def fe_demean(df, var_name, group):
+
     def f(vector): # demean within each group
         v = vector.values
         return v - np.mean(v)
@@ -25,26 +26,38 @@ def residualize(df, y_name, x_names, first_group, second_groups = None):
     
     if len(x_names) == 0 and second_groups is None: # don't do anything
         return y - np.mean(y), [np.mean(y)]
-    else:
-        x = df[x_names].values
-        x_demeaned = np.array([fe_demean(df, x, first_group) for x in x_names])
-        
-        if second_groups is not None: # If extra FE, create dummies
-            dummy_df = pd.get_dummies(df, columns=second_groups)
-            dummy_cols = []
-            for col in second_groups:
-                dummy_cols += [elt for elt in dummy_df.columns if col in elt]
+    else:   
+        # Set up x variables   
+        if second_groups is None: 
+            x = df[x_names].values
+        else: # Create dummies if there is are fixed effects
+            def get_dummies(group):
+                return pd.get_dummies(df, columns=[group])\
+                       .iloc[:, len(df.columns):]
                 
-            dummies = dummy_df[dummy_cols].values
-                                
-            if len(x_names) > 0:
-                x = np.hstack((x, dummies))
-                x_demeaned = np.hstack((x_demeaned, dummies))
+            def join_dataframes(df_list):             # Drops first dummy
+                if len(df_list) == 1:
+                    return df_list[0]
+                elif len(df_list) >= 2:
+                    return df_list[0].join(join_dataframes(df_list[1:]))
+                assert False
+                
+            dummy_df = join_dataframes([get_dummies(g) 
+                                        for g in second_groups])   
+            dummies_demeaned = dummy_df.values # TODO: Fix this!     
+            
+            if len(x_names) == 0:
+                x = dummy_df.values
+                x_demeaned = dummies_demeaned
             else:
-                x = dummies
-                x_demeaned = dummies
+                x = df[x_names].join(dummy_df).values
+                x_demeaned = np.array([fe_demean(df,col,first_group)
+                                                  for col in x_names]).T
+                x_demeaned = np.hstack((x_demeaned, dummies_demeaned))
+                
 
         beta = linalg.lstsq(x_demeaned, y)[0]
+            
         resid = y - np.dot(x, beta)
         return resid - np.mean(resid), beta
                 
@@ -69,7 +82,11 @@ def remove_duplicates(seq):
 
 
 def drop_one_class_teachers(class_df):
-    grouped = class_df.groupby('teacher')['class id']
+    try:
+        grouped = class_df.groupby('teacher')['class id']
+    except KeyError:
+        print(class_df.head())
+        assert False
     df = pd.DataFrame(grouped.apply(lambda x: len(x) > 1).reset_index())
     df.columns = ['teacher', 'keep']
     class_df = pd.merge(df, class_df)

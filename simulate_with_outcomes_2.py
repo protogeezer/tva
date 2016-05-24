@@ -1,29 +1,18 @@
-from va_functions import remove_duplicates
 import numpy as np
 import pandas as pd
-from random import shuffle
 from copy import copy
 
-
-# df holds data for one state in one year
-def shuffle_bureaucrats(df):
-    switch_indices = pd.Series(df['switch status'] == 1)
-    switch_people = df.loc[switch_indices, 'person'].values
-    shuffle(switch_people)
-    df.loc[switch_indices, 'person'] = switch_people
-    return df
-    
 def find_swappers(df):
-    switch_indices = pd.Series(df['switch status'] == 1)
-    switch_people = df.loc[switch_indices, 'person'].values
-    new_switch_people = copy(switch_people)
-    shuffle(new_switch_people)
-    return dict(zip(switch_people, new_switch_people))
+    switch_people = df.loc[df['switch'], 'person'].values
+    new_people = copy(switch_people)
+    np.random.shuffle(new_people)
+    return dict(zip(switch_people, new_people))
 
-def simulate(df, seed_increment, outcomes, retire_fraction, swap_fraction):
+def simulate(df, seed_increment, outcomes, switch_fraction):
              
     np.random.seed(seed_increment)
     times = sorted(set(df['year'].values))
+    df['switch'] = np.random.random(len(df)) < switch_fraction
     
     for t in times[1:]:
         # find out who needs to swap with who
