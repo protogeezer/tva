@@ -3,30 +3,25 @@ import numpy.linalg as linalg
 import pandas as pd
 import scipy.sparse as sparse
 
-class Groupby:
-    def __init__(self, keys):
-        self.unique_keys = frozenset(keys)
-        self.set_indices(keys)
-        
-    def set_indices(self, keys):
-        self.indices = {k:[] for k in self.unique_keys}
-        for i, k in enumerate(keys):
-            self.indices[k].append(i)
-            
-    def apply(self, values, function):
-        result = np.zeros(len(values))
-        for k in self.unique_keys:
-            result[self.indices[k]] = function(values[self.indices[k]])
-        return result
-
 
 def estimate_var_epsilon(data):
     data = data[data['var'].notnull()]
     var_epsilon_hat = np.dot(data['var'].values, data['size'].values)/np.sum(data['size'])
     assert var_epsilon_hat > 0
     return var_epsilon_hat
+    
+def fe_demean(df, variables, group):
+    def f(matrix): # demean within each group
+        m = matrix.values
+        return m - np.mean(m, axis = 0)
+        
+    return np.hstack(df[variables].groupby(group).apply(f).values)
+
 
 def residualize(df, y_var, x_vars, first_group, other_groups):
+    if other_groups is None:
+        beta = np.linalg.lstsq(fe_demean(df, x_vars, 'teacher'))
+        
     y = df[y_var].values
     z = df[x_vars].values
     categorical_data = df[[first_group] + other_groups].values
@@ -34,12 +29,6 @@ def residualize(df, y_var, x_vars, first_group, other_groups):
     residual = y - np.dot(z , beta) - np.sum(fes[:, 1:], axis=1)
     # need to demean residual because FE's are only identified up to a constant
     return residual - np.mean(residual), beta
-
-
-# Mean 0, variance 1
-def normalize(vector):
-    vector = vector - np.mean(vector)
-    return vector / np.std(vector)
 
 
 # function by some internet person, not me
