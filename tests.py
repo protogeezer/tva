@@ -7,20 +7,6 @@ import matplotlib.pyplot as plt
 import scipy.stats as stats
 from simulate_two_types import simulate_two_types
 
-def test_weighted_cross_class_weight():
-    sizes = [[2, 3], [4, 9]]
-    assert weighted_cross_class_weight(sizes, [0,0]) == 6
-    assert weighted_cross_class_weight(sizes, [0,1]) == 11
-    assert weighted_cross_class_weight(sizes, [1,0]) == 7
-    assert weighted_cross_class_weight(sizes, [1,1]) == 12
-
-def test_weighted_cross_class_cov():
-    sizes = [[1,2], [3,4]]
-    scores = [[-3, -1], [1, 2]]
-    assert weighted_cross_class_cov(scores, sizes, [0,0]) == -3*4
-    assert weighted_cross_class_cov(scores, sizes, [0,1]) == -3*2*5
-    assert weighted_cross_class_cov(scores, sizes, [1,0]) == -1*5
-    assert weighted_cross_class_cov(scores, sizes, [1,1]) == -2*6
     
 def test_mu_covariances():
     n = 300
@@ -36,11 +22,13 @@ def test_mu_covariances():
     df.loc[:, 'size'] = [int(elt) for elt in np.random.normal(8,3,n)]
     
     teachers = set(df['teacher'].values)
+    type_0_indices = pd.Series(df['type'] == 0)
     
     for teacher in teachers:
         mu = np.random.multivariate_normal([0,0], cov_mat_mu)
-        df.loc[(df['teacher'] == teacher) & (df['type'] == 0), 'mean score'] = mu[0]
-        df.loc[(df['teacher'] == teacher) & (df['type'] == 1), 'mean score'] = mu[1]
+        teacher_indices = pd.Series(df['teacher'] == teacher)
+        df.loc[teacher_indices & type_0_indices, 'mean score'] = mu[0]
+        df.loc[teacher_indices & ~type_0_indices, 'mean score'] = mu[1]
         
     teacher_class_map = get_teacher_class_map(df, teachers)
     
@@ -70,14 +58,21 @@ def test_estimate_theta_covariance():
     teachers = set(df['teacher'].values)
     teacher_class_map = {}
     
+    type_0_indices = pd.Series(df['type'] == 0)
+    
     for teacher in teachers:
         mu = np.random.multivariate_normal([0,0], cov_mat_mu)
-        teacher_class_map[teacher] = set(df[df['teacher'] == teacher]['class id'].values)
+        teacher_indices = pd.Series(df['teacher'] == teacher)
+        
+        teacher_class_map[teacher] = set(df.loc[teacher_indices, 'class id'].values)
         for class_id in teacher_class_map[teacher]:
+            class_indices = pd.Series(df['class id'] == class_id)
             theta = np.random.multivariate_normal([0,0], cov_mat_theta)
         
-            df.loc[(df['teacher'] == teacher) & (df['type'] == 0) & (df['class id'] == class_id), 'mean score'] = mu[0] + theta[0]
-            df.loc[(df['teacher'] == teacher) & (df['type'] == 1) & (df['class id'] == class_id), 'mean score'] = mu[1] + theta[1]
+            df.loc[teacher_indices & type_0_indices & class_indices, \
+                                         'mean score'] = mu[0] + theta[0]
+            df.loc[teacher_indices & ~type_0_indices & class_indices, \
+                                         'mean score'] = mu[1] + theta[1]
 
     cov_theta_hat = estimate_theta_covariance(df, teachers, teacher_class_map, cov_mu,)
 
@@ -138,36 +133,8 @@ def test_get_mc1():
     
     assert estimate > mu_1 - 2*se
     assert estimate < mu_1 + 2*se
-
-def test_get_mc0():
-    var_epsilon = abs(np.random.normal())
-    std_theta = abs(np.random.normal())    
-    n_students = 25
-    n_classes = 1000
-
-    errors = np.zeros(n_classes)    
-    for class_ in range(n_classes):
-        mu_1 = np.random.normal()
-        mu_0 =  np.random.normal()
-    
-        df = construct_class_df(0, 0, n_students, std_theta, mu_0, mu_1, var_epsilon)
-        df = calculate_va_continuous.collapse(df)
-        df['m_c1'] = mu_1   # Just assume this is correctly estimated
-        mc_0 = calculate_va_continuous.get_mc0(df)
-        errors[class_] = mc_0 - mu_0
         
-    error_se = (np.var(errors) / n_classes)**(.5)
-    mean_error = np.mean(errors)
 
-    assert mean_error > -2 * error_se
-    assert mean_error < 2 * error_se
-        
-def test_normalize():
-    vector = np.random.normal(np.random.normal(), abs(np.random.normal()), 100)
-    normalized = normalize(vector)
-    assert round(np.mean(normalized), 3) == 0
-    assert round(np.var(normalized), 3) == 1  
-      
 def construct_class_df(teacher, class_, n_students, std_theta, mu_0, mu_1, var_epsilon):
     theta = np.random.normal(0, std_theta) if std_theta > 0 else 0
     df = pd.DataFrame()
@@ -179,60 +146,7 @@ def construct_class_df(teacher, class_, n_students, std_theta, mu_0, mu_1, var_e
     df['residual'] = theta + mu_0 + mu_1 * df['continuous var'] + np.random.normal(0, var_epsilon**(.5), n_students)
     return df
 
-    
-def test_get_mc1_precision():
-    var_epsilon = abs(np.random.random())
-    std_theta = abs(np.random.random())
-    n_classes = 100
-    
-    errors = []
-    precisions = []
-    
-    for class_ in range(n_classes):
-        mu_0 = np.random.random()
-        mu_1 = np.random.random()
-        n_students = 20
-        df = construct_class_df(0, class_, n_students, std_theta, mu_0, mu_1, var_epsilon)
-        m_c1 = calculate_va_continuous.get_mc1(df)
-        
-        errors.append(m_c1 - mu_1)
-        precisions.append(calculate_va_continuous.get_mc1_precision(calculate_va_continuous.collapse(df), var_epsilon))
-    
-    check_calibration(np.array(errors), np.array(precisions))
 
-def test_get_mc0_precision():
-    std_theta = 1
-    var_epsilon = 1   
-    n_students = 20
-    n_classes = 10
-    errors = np.zeros(n_classes)    
-    precisions = np.zeros(n_classes)
-    
-    for class_ in range(n_classes):
-        mu_1 = np.random.normal()
-        mu_0 =  np.random.normal()
-
-        df = construct_class_df(0, 0, n_students, std_theta, mu_0, mu_1, var_epsilon)
-        
-        collapsed = calculate_va_continuous.collapse(df)
-        collapsed['m_c1'] = calculate_va_continuous.get_mc1(df)
-        mc_0 = calculate_va_continuous.get_mc0(collapsed)
-        
-        errors[class_] = mc_0 - mu_0
-        precisions[class_] = calculate_va_continuous.get_mc0_precision(std_theta**2, var_epsilon, df['continuous var'].values)
-        
-    check_calibration(errors, precisions)
-    
-def test_get_mc1_squared_error():
-    var_epsilon = 1
-    var_z = 1.7
-    n = 1000
-    
-    z = np.random.normal(0, var_z**(.5), n)
-    error = calculate_va_continuous.get_mc1_squared_error(z, var_epsilon)
-    
-    assert round(error, 3) == round(var_epsilon / (n* var_z), 3)
- 
     
 def test_residualize():
     N, T, beta = 1000, 3, [3, 4]
