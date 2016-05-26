@@ -19,7 +19,7 @@ def compute_estimates_once(input_tuple):
                         column_names=column_names)
 
 if __name__ == '__main__':
-    n_iters = 16
+    n_iters = 1
 
     assignments = pd.read_csv('/home/lizs/Documents/ias/data/indicus_cleaned.csv', \
                               usecols=['year', 'clean district name', 'person'])

@@ -8,9 +8,9 @@ def estimate_mu_variance(data, n_iters):
         vector = vector.values
         val = 0
         for i in range(1, len(vector)):
-            val += vector[i:] @ vector[:-i]
+            val += np.dot(vector[i:], vector[:-i])
 
-        return[val, len(vector) * (len(vector) -1) /2]
+        return [val, len(vector) * (len(vector) -1) /2]
             
     def weighted_mean(arr):
         return np.sum(arr[:, 0]) / np.sum(arr[:, 1])
@@ -56,11 +56,24 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None,
         if categorical_controls is not None:
             categorical_controls = [column_names[elt] 
                                     for elt in categorical_controls]
-
+        if covariates is not None:
+            covariates = [column_names[elt] for elt in covariates]
+            
+    assert 'teacher' in data.columns
+    
+    if 'teacher' not in class_level_vars:
+        warnings.warn(' \'teacher\' or its analog (as specified by the \
+                      \'column_names\' argument) was not included in \
+                      \'class_level_vars\'. It will be added to \
+                      \'class_level_vars\': There cannot be multiple teachers \
+                      per class.')
+        class_level_vars.append('teacher')
+ 
+  
     # If a residual was not included, residualize scores
     if residual is None:
         data.loc[:, 'residual'], beta = residualize(data, 'score', covariates,
-                                                'teacher', categorical_controls)
+                                               'teacher', categorical_controls)
     else:
         data.rename(columns={residual: 'residual'}, inplace=True) 
 

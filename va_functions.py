@@ -1,7 +1,8 @@
 import numpy as np
 import numpy.linalg as linalg
 import pandas as pd
-import scipy.sparse as sparse
+import scipy.sparse as sps
+from functools import reduce
 
 
 def estimate_var_epsilon(data):
@@ -10,14 +11,9 @@ def estimate_var_epsilon(data):
     assert var_epsilon_hat > 0
     return var_epsilon_hat
     
-# Demeaning with one fixed effect
-def fe_demean(df, var_name, group):
-
-    def f(vector): # demean within each group
-        v = vector.values
-        return v - np.mean(v)
-        
-    return np.hstack(df.groupby(group)[var_name].apply(f).values)
+def fe_demean(df, variables, group):
+    f = lambda df: df - np.mean(df.values, axis = 0)
+    return df.groupby(group)[variables].apply(f)
 
 # Calculates beta using y_name = x_names * beta + group_name (dummy) + dummy_control_name
 # Returns               y_name - x_names * beta - dummy_control_name
@@ -27,44 +23,40 @@ def residualize(df, y_name, x_names, first_group, second_groups = None):
     if len(x_names) == 0 and second_groups is None: # don't do anything
         return y - np.mean(y), [np.mean(y)]
     else:   
-        # Set up x variables   
+        # If only one set of FE's, use demeaning transformation
         if second_groups is None: 
-            x = df[x_names].values
+            x_demeaned = fe_demean(df, x_names, first_group)
+            beta = linalg.lstsq(x_demeaned, y)[0]
+            resid = y - np.dot(df[x_names], beta)
+            
         else: # Create dummies if there is are fixed effects
-            def get_dummies(group):
-                return pd.get_dummies(df, columns=[group])\
-                       .iloc[:, len(df.columns):]
-                
-            def join_dataframes(df_list):             # Drops first dummy
-                if len(df_list) == 1:
-                    return df_list[0]
-                elif len(df_list) >= 2:
-                    return df_list[0].join(join_dataframes(df_list[1:]))
-                assert False
-                
-            dummy_df = join_dataframes([get_dummies(g) 
-                                        for g in second_groups])   
-            dummies_demeaned = dummy_df.values # TODO: Fix this!     
+            def get_dummies(group): # Drops first dummy
+                return pd.get_dummies(df, columns=[group]).iloc[:, len(df.columns):]
             
-            if len(x_names) == 0:
-                x = dummy_df.values
-                x_demeaned = dummies_demeaned
-            else:
-                x = df[x_names].join(dummy_df).values
-                x_demeaned = np.array([fe_demean(df,col,first_group)
-                                                  for col in x_names]).T
-                x_demeaned = np.hstack((x_demeaned, dummies_demeaned))
+            dummy_df = reduce(lambda x, y: x.join(y), \
+                              (get_dummies(g) for g in second_groups))
                 
-
-        beta = linalg.lstsq(x_demeaned, y)[0]
+            x_df = dummy_df.join(df[x_names])
+            first_group_df = pd.get_dummies(df, columns = first_group).iloc[:, len(df.columns)-1:]
+            n = len(first_group_df.columns)
+            rhs = (first_group_df.join(x_df)).values
+            beta = sparse.
             
-        resid = y - np.dot(x, beta)
+#            teacher_df = pd.DataFrame(df[first_group])
+#            x_demeaned = fe_demean(x_df.join(teacher_df), x_df.columns, first_group).values
+#       
+#            # remove columns that are close to zero
+#            n, k = x_demeaned.shape
+#            not_all_zero = np.array([not np.allclose(x_demeaned[:, i], np.zeros(n), 
+#                                     atol = 1/n) for i in range(k)])
+#            print('%d columns being dropped because of collinearity' % (len(not_all_zero) - sum(not_all_zero)))
+#            x_demeaned = x_demeaned[:, not_all_zero]
+#            x = x_df.values[:, not_all_zero]
+        
+            beta = linalg.lstsq(x_demeaned, y)[0]
+            resid = y - np.dot(x, beta)
+            
         return resid - np.mean(resid), beta
-                
-# Mean 0, variance 1
-def normalize(vector):
-    vector = vector - np.mean(vector)
-    return vector / np.std(vector)
 
 
 # function by some internet person, not me
@@ -105,7 +97,7 @@ def binscatter(x, y, nbins):
     y_means = np.zeros(nbins)
     y_medians = np.zeros(nbins)
     
-    for i in range(0, nbins):
+    for i in xrange(0, nbins):
         start = len(x) * i / nbins
         end = len(x) * (i+1) / nbins
         bins[i] = np.mean(x[int(start):int(end)])
@@ -120,7 +112,8 @@ def check_calibration(errors, precisions):
 
     standardized_errors = errors**2 * precisions
     mean_standardized_error = np.mean(standardized_errors)
-    standardized_error_se = (np.var(standardized_errors) / len(standardized_errors))**.5
+    standardized_error_se = (np.var(standardized_errors) \
+                              / len(standardized_errors))**.5
     assert mean_error > -3 * se
     assert mean_error < 3 * se
     assert mean_standardized_error > 1 - 2 * standardized_error_se 

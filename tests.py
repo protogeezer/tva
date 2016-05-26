@@ -5,7 +5,7 @@ import calculate_va_continuous
 from va_functions import *
 import matplotlib.pyplot as plt
 import scipy.stats as stats
-from simulate_two_types import simulate_two_types
+#from simulate_two_types import simulate_two_types
 
     
 def test_mu_covariances():
@@ -43,17 +43,18 @@ def test_mu_covariances():
     assert cov_mu_hat < cov_mu * tolerance
     
 def test_estimate_theta_covariance():
-    n = 300
+    n_teachers = 300
+    n_classes_per_teacher = 2
     cov_mu = .1
     cov_mat_mu = [[.3, cov_mu], [cov_mu, .2]]
     cov_theta = .3
     cov_mat_theta = [[.4, cov_theta], [cov_theta, .35]]
     
     df = pd.DataFrame()
-    df.loc[:, 'teacher'] = [int(elt) for elt in np.arange(0,n*.25,.25)]
-    df.loc[:, 'class id'] = [int(elt) for elt in np.arange(0,n*.5, .5)]
-    df.loc[:, 'type'] = [int(i%2 == 0) for i in range(n)]
-    df.loc[:, 'size'] = [int(elt) for elt in np.random.normal(8,3,n)]
+    df.loc[:, 'teacher']  = np.repeat(range(n_teachers), 2 * n_classes_per_teacher)
+    df.loc[:, 'class id'] = np.tile([0, 0, 1, 1], n_teachers)
+    df.loc[:, 'type']    = np.tile([0, 1, 0, 1], n_teachers)
+    df.loc[:, 'size'] = np.random.randint(5, 11, n_teachers * n_classes_per_teacher * 2)
     
     teachers = set(df['teacher'].values)
     teacher_class_map = {}
@@ -81,27 +82,29 @@ def test_estimate_theta_covariance():
     assert cov_theta_hat < cov_theta * tolerance
     
 def test_estimate_variance():
-    n = 300
+    n_teachers = 300
     variance = abs(np.random.normal())
     noise_stdev = abs(np.random.normal())
     n_classes_per_teacher = 4
     
     df = pd.DataFrame()
-    df['teacher'] = [int(elt) for elt in np.arange(0, n*1.0/n_classes_per_teacher, 1./n_classes_per_teacher)]
-    df['class id'] = np.tile(range(n_classes_per_teacher), n/n_classes_per_teacher)
+    df['teacher'] = np.repeat(range(n_teachers), n_classes_per_teacher)
+    df['class id'] = np.tile(range(n_classes_per_teacher), n_teachers)
     df['size'] = 10
     
-    teachers = set(df['teacher'].values)
-    
-    for teacher in teachers:
+    for teacher in range(n_teachers):
         variable = np.random.normal(0, variance**(.5))
-        for class_id in df[df['teacher'] == teacher]['class id'].values:
-            df.loc[(df['teacher'] == teacher) & (df['class id'] == class_id), 'var'] = variable + np.random.normal(0, noise_stdev)
+        teacher_indices = pd.Series(df['teacher'] == teacher)
+        for class_id in df.loc[teacher_indices, 'class_id']:
+            df.loc[teacher_indices & (df['class id'] == class_id), 'var'] \
+                              = variable + np.random.normal(0, noise_stdev)
 
-    variance_estimate = calculate_va_continuous.estimate_variance(df, teachers, 'var')
+    variance_estimate = \
+        calculate_va_continuous.estimate_variance(df, range(n_teachers), 'var')
     tolerance = 2
     assert variance_estimate > variance / tolerance
     assert variance_estimate < variance * tolerance
+
 
 def test_estimate_var_epsilon_one_class():
     df = pd.DataFrame()
@@ -111,12 +114,14 @@ def test_estimate_var_epsilon_one_class():
     var_epsilon = abs(np.random.normal())
     
     df['continuous var'] = np.random.normal(0, 1, n)
-    df['residual'] = constant + mu_1 * df['continuous var'] + np.random.normal(0, var_epsilon**.5, n)
+    df['residual'] = constant + mu_1 * df['continuous var'] \
+                     + np.random.normal(0, var_epsilon**.5, n)
     
     var_epsilon_hat = calculate_va_continuous.estimate_var_epsilon_one_class(df, mu_1)
     tolerance = 2
     assert var_epsilon_hat > var_epsilon / tolerance
     assert var_epsilon_hat < var_epsilon * tolerance
+    
     
 def test_get_mc1():
     constant = np.random.normal()
@@ -143,7 +148,8 @@ def construct_class_df(teacher, class_, n_students, std_theta, mu_0, mu_1, var_e
     df['teacher'] = teacher
     df['class id'] = class_
     df['continuous var'] = np.random.normal(0, 1, n_students)
-    df['residual'] = theta + mu_0 + mu_1 * df['continuous var'] + np.random.normal(0, var_epsilon**(.5), n_students)
+    df['residual'] = theta + mu_0 + mu_1 * df['continuous var'] + \
+                     np.random.normal(0, var_epsilon**(.5), n_students)
     return df
 
 
@@ -155,32 +161,46 @@ def test_residualize():
     df = pd.DataFrame()
     fixed_effects = np.random.normal(0, 1, N)
     time_effects = np.random.normal(0, 1, T)
-    df['i'] = [int(i / T) for i in range(N * T)]
-    df['t'] = [t % T for t in range(N * T)]
-    fixed_effect = np.array([fixed_effects[x] for x in df['i'].values])
-    time_effect = np.array([time_effects[x] for x in df['t'].values])
-    df['x1'] = fixed_effect * .2 + np.random.normal(0, 1, N * T)
-    df['x2'] = np.random.normal(0, 1, N * T) - time_effect*.1
-    df['y'] = np.dot(df[['x1', 'x2']], beta) + np.random.normal(0, .1, N*T) + fixed_effect + time_effect
-    _, beta_hat = residualize(df, 'y', ['x1', 'x2'],  'i', 't')
-    assert beta_hat[0] > beta[0] - tolerance
-    assert beta_hat[0] < beta[0] + tolerance
-    assert beta_hat[1] > beta[1] - tolerance
-    assert beta_hat[1] < beta[1] + tolerance
+    df['i'] = np.repeat(range(N), T)
+    df['t'] = np.tile(range(T), N)
+    df['x1'] = fixed_effects[df['i']] * .2 + np.random.normal(0, 1, N * T)
+    df['x2'] = np.random.normal(0, 1, N * T) - time_effects[df['t']] * .1
+    df['y'] = np.dot(df[['x1', 'x2']], beta) + np.random.normal(0, .1, N * T) \
+              + fixed_effects[df['i']] + time_effects[df['t']]
+    # Introduce collinearity: Dummies for i=1000 and t=3 are the same
+    df2 = pd.DataFrame(data={'i':1000, 't':3, 'x1':.2, 'x2':.4, 'y':7}, 
+                       index = [3000])
+    df = df.append(df2)
+    df['resid0'],beta_hat = residualize(df, 'y', ['x1','x2'], 'i', 't')
+    print(beta_hat)
+    print(df.head())
+    print(df.tail())
+
+    assert beta_hat[3] > beta[0] - tolerance
+    assert beta_hat[3] < beta[0] + tolerance
+    assert beta_hat[4] > beta[1] - tolerance
+    assert beta_hat[4] < beta[1] + tolerance
     
 
-def test_two_types_covariances():
-    var_tolerance = .01
-    corr_tolerance = .1
-    corr_mu = .7
-    parameters = {'cov mu':[[.018, corr_mu*(.018*.012)**.5], [corr_mu*(.018*.012)**.5, .012]], 'cov theta':[[0,0], [0, 0]], 'mean class size':24, 'mean classes taught':3}
-    data = simulate_two_types(.01, [0, 0], 1000, parameters)
-    data.loc[:, 'year'] = data['class id']
-    moments, class_level_data = calculate_covariances(data, [])
-    print(moments)
-    assert moments['var mu'][0] > parameters['cov mu'][0][0] - var_tolerance
-    assert moments['var mu'][0] < parameters['cov mu'][0][0] + var_tolerance
-    assert moments['var mu'][1] > parameters['cov mu'][1][1] - var_tolerance
-    assert moments['var mu'][1] < parameters['cov mu'][1][1] + var_tolerance
-    assert moments['corr mu'] > corr_mu - corr_tolerance
-    assert moments['corr mu'] < corr_mu + corr_tolerance
+#def test_two_types_covariances():
+#    var_tolerance = .01
+#    corr_tolerance = .1
+#    corr_mu = .7
+#    parameters = {'cov mu' : [[.018, corr_mu*(.018*.012)**.5], 
+#                             [corr_mu*(.018*.012)**.5, .012]], 
+#                  'cov theta' : [[0,0], [0, 0]], 
+#                  'mean class size' : 24, 
+#                  'mean classes taught' : 3}
+#    data = simulate_two_types(.01, [0, 0], 1000, parameters)
+#    data.loc[:, 'year'] = data['class id']
+#    moments, class_level_data = calculate_covariances(data, [])
+#    print(moments)
+#    assert moments['var mu'][0] > parameters['cov mu'][0][0] - var_tolerance
+#    assert moments['var mu'][0] < parameters['cov mu'][0][0] + var_tolerance
+#    assert moments['var mu'][1] > parameters['cov mu'][1][1] - var_tolerance
+#    assert moments['var mu'][1] < parameters['cov mu'][1][1] + var_tolerance
+#    assert moments['corr mu'] > corr_mu - corr_tolerance
+#    assert moments['corr mu'] < corr_mu + corr_tolerance
+    
+if __name__ == '__main__':
+    test_residualize()
