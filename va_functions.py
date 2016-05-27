@@ -17,27 +17,29 @@ def fe_demean(df, variables, group):
     return df.groupby(group)[variables].apply(f)
     
 # remove some collinear dummies
-def get_dummies_from_df(df, first_group, second_group):
-    unique_vals_1, data_as_int_1 = np.unique(df[first_group], return_inverse = True)
-    unique_vals_2, data_as_int_2 = np.unique(df[second_group], return_inverse = True)
+def get_dummies(df, first_group, second_group):
+    unique_vals_1, data_as_int_1 = np.unique(df[first_group], 
+                                             return_inverse = True)
+    unique_vals_2, data_as_int_2 = np.unique(df[second_group], 
+                                             return_inverse = True)
     
     # if an indicator column in group 1 is the same as one in group 2, drop the
     # one in group 2
     drops_indices = pd.Series([False for elt in first_group])
     for indices_1 in [pd.Series(df[first_group] == elt) 
-                      for elt in unique_vals_1)]:
-        for indices_2 in filter(lambda x: x == indices_1, 
+                      for elt in unique_vals_1]:
+        for indices_2 in filter(lambda x: (x == indices_1).all(), 
                                 [pd.Series(df[second_group] == elt) 
                                  for elt in unique_vals_2]):
             drops_indices = pd.Series(drops_indices | indices_2)
     
-    data_as_int_2[drops_indices] = -1
-    data_as_int_2[data_as_int_2 == max(data_as_int_2)] = -1 # drop one more
+    data_as_int_2[drops_indices] = 0
     
-    get_dummies_from_vector = lambda v: sps.csc_matrix((np.ones(len(v)), 
-                                                        (range(len(v)), v)))
-    return get_dummies_from_vector(data_as_int_1),
-           get_dummies_from_vector(data_as_int_2)
+    def get_dummies_from_vector(v): 
+        return sps.csc_matrix((np.ones(len(v)), (range(len(v)), v)))
+    # drop all corresponding to 0
+    return get_dummies_from_vector(data_as_int_1), \
+           get_dummies_from_vector(data_as_int_2)[:, 1:] 
           
 
 # Calculates beta using y_name = x_names * beta + group_name (dummy) + dummy_control_name
@@ -59,24 +61,17 @@ def residualize(df, y_name, x_names, first_group, second_groups = None):
             
         else: # Create dummies if there is are fixed effects
             warnings.warn('Individual fixed effects may not be identified. Take caution, because this procedure is essentially trying to recover them.')
-            def get_dummies(group, drop_one):
-                _, data_as_int = np.unique(df[group], return_inverse = True)
-                dummies = sps.csc_matrix((np.ones(n), (range(n), data_as_int)))
-                if drop_one: # Drop last dummy
-                    return dummies[:, :-1]
-                return dummies
             
-            first_group_dummies = get_dummies(first_group, False)
-            k = first_group_dummies.shape[1]
             if len(second_groups) == 1:
-                x = sps.hstack((sps.csc_matrix(df[x_names].values),
-                                get_dummies(second_groups[0], True),
-                                first_group_dummies))
+                dummies1, dummies2 = get_dummies(df, first_group, second_groups[0])
+                k = dummies1.shape[1]
+                x = sps.hstack((sps.csc_matrix(df[x_names].values), dummies1,
+                                dummies2))
             else:
                 raise Exception('Sorry, you can only include one fixed effect now.')
             
             beta = sps.linalg.lsqr(x, y)[0]
-            resid = y - x * beta + first_group_dummies * beta[-k:]
+            resid = y - x[:, :-k] * beta[:-k]
             return resid - np.mean(resid), beta
 
 
