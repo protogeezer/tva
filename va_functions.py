@@ -1,8 +1,9 @@
+import pandas as pd
 import numpy as np
 import numpy.linalg as linalg
-import pandas as pd
 import scipy.sparse as sps
 from functools import reduce
+import warnings
 
 
 def estimate_var_epsilon(data):
@@ -14,49 +15,69 @@ def estimate_var_epsilon(data):
 def fe_demean(df, variables, group):
     f = lambda df: df - np.mean(df.values, axis = 0)
     return df.groupby(group)[variables].apply(f)
+    
+# remove some collinear dummies
+def get_dummies_from_df(df, first_group, second_group):
+    unique_vals_1, data_as_int_1 = np.unique(df[first_group], return_inverse = True)
+    unique_vals_2, data_as_int_2 = np.unique(df[second_group], return_inverse = True)
+    
+    # if an indicator column in group 1 is the same as one in group 2, drop the
+    # one in group 2
+    drops_indices = pd.Series([False for elt in first_group])
+    for indices_1 in [pd.Series(df[first_group] == elt) 
+                      for elt in unique_vals_1)]:
+        for indices_2 in filter(lambda x: x == indices_1, 
+                                [pd.Series(df[second_group] == elt) 
+                                 for elt in unique_vals_2]):
+            drops_indices = pd.Series(drops_indices | indices_2)
+    
+    data_as_int_2[drops_indices] = -1
+    data_as_int_2[data_as_int_2 == max(data_as_int_2)] = -1 # drop one more
+    
+    get_dummies_from_vector = lambda v: sps.csc_matrix((np.ones(len(v)), 
+                                                        (range(len(v)), v)))
+    return get_dummies_from_vector(data_as_int_1),
+           get_dummies_from_vector(data_as_int_2)
+          
 
 # Calculates beta using y_name = x_names * beta + group_name (dummy) + dummy_control_name
 # Returns               y_name - x_names * beta - dummy_control_name
 def residualize(df, y_name, x_names, first_group, second_groups = None):
     y = df[y_name].values
+    n = len(df)
     
     if len(x_names) == 0 and second_groups is None: # don't do anything
         return y - np.mean(y), [np.mean(y)]
     else:   
-        # If only one set of FE's, use demeaning transformation
+        # Set up x variables   
         if second_groups is None: 
+            x_df = df[x_names]
             x_demeaned = fe_demean(df, x_names, first_group)
             beta = linalg.lstsq(x_demeaned, y)[0]
-            resid = y - np.dot(df[x_names], beta)
+            resid = y - np.dot(x, beta)
+            return resid - np.mean(resid), beta
             
         else: # Create dummies if there is are fixed effects
-            def get_dummies(group): # Drops first dummy
-                return pd.get_dummies(df, columns=[group]).iloc[:, len(df.columns):]
+            warnings.warn('Individual fixed effects may not be identified. Take caution, because this procedure is essentially trying to recover them.')
+            def get_dummies(group, drop_one):
+                _, data_as_int = np.unique(df[group], return_inverse = True)
+                dummies = sps.csc_matrix((np.ones(n), (range(n), data_as_int)))
+                if drop_one: # Drop last dummy
+                    return dummies[:, :-1]
+                return dummies
             
-            dummy_df = reduce(lambda x, y: x.join(y), \
-                              (get_dummies(g) for g in second_groups))
-                
-            x_df = dummy_df.join(df[x_names])
-            first_group_df = pd.get_dummies(df, columns = first_group).iloc[:, len(df.columns)-1:]
-            n = len(first_group_df.columns)
-            rhs = (first_group_df.join(x_df)).values
-            beta = sparse.
+            first_group_dummies = get_dummies(first_group, False)
+            k = first_group_dummies.shape[1]
+            if len(second_groups) == 1:
+                x = sps.hstack((sps.csc_matrix(df[x_names].values),
+                                get_dummies(second_groups[0], True),
+                                first_group_dummies))
+            else:
+                raise Exception('Sorry, you can only include one fixed effect now.')
             
-#            teacher_df = pd.DataFrame(df[first_group])
-#            x_demeaned = fe_demean(x_df.join(teacher_df), x_df.columns, first_group).values
-#       
-#            # remove columns that are close to zero
-#            n, k = x_demeaned.shape
-#            not_all_zero = np.array([not np.allclose(x_demeaned[:, i], np.zeros(n), 
-#                                     atol = 1/n) for i in range(k)])
-#            print('%d columns being dropped because of collinearity' % (len(not_all_zero) - sum(not_all_zero)))
-#            x_demeaned = x_demeaned[:, not_all_zero]
-#            x = x_df.values[:, not_all_zero]
-        
-            beta = linalg.lstsq(x_demeaned, y)[0]
-            resid = y - np.dot(x, beta)
-            
-        return resid - np.mean(resid), beta
+            beta = sps.linalg.lsqr(x, y)[0]
+            resid = y - x * beta + first_group_dummies * beta[-k:]
+            return resid - np.mean(resid), beta
 
 
 # function by some internet person, not me
@@ -74,11 +95,7 @@ def remove_duplicates(seq):
 
 
 def drop_one_class_teachers(class_df):
-    try:
-        grouped = class_df.groupby('teacher')['class id']
-    except KeyError:
-        print(class_df.head())
-        assert False
+    grouped = class_df.groupby('teacher')['class id']
     df = pd.DataFrame(grouped.apply(lambda x: len(x) > 1).reset_index())
     df.columns = ['teacher', 'keep']
     class_df = pd.merge(df, class_df)

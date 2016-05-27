@@ -1,10 +1,10 @@
-import sys
 import pandas as pd
 import numpy as np
 from basic_va_alg import calculate_va
 from multiprocessing import cpu_count, Pool
 from simulate_with_assignments import simulate
-import matplotlib.pyplot as plt
+import scipy.sparse.linalg
+
 
 def compute_estimates_once(input_tuple):
     i, assignments = input_tuple
@@ -19,7 +19,7 @@ def compute_estimates_once(input_tuple):
                         column_names=column_names)
 
 if __name__ == '__main__':
-    n_iters = 1
+    n_iters = 4
 
     assignments = pd.read_csv('/home/lizs/Documents/ias/data/indicus_cleaned.csv', \
                               usecols=['year', 'clean district name', 'person'])
@@ -29,7 +29,8 @@ if __name__ == '__main__':
 
     num_cores = min(cpu_count(), n_iters)
     pool = Pool(num_cores)
-    results = pool.map(compute_estimates_once, [(i, assignments) for i in range(n_iters)])
+    results = pool.map(compute_estimates_once, 
+                       [(i, assignments) for i in range(n_iters)])
     pool.close()
     pool.join()
     

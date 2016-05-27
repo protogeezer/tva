@@ -18,19 +18,24 @@ def estimate_mu_variance(data, n_iters):
     mu_estimates = np.array(list(data.groupby('teacher')['mean score'].apply(f).values))
     mu_hat = weighted_mean(mu_estimates)
     
-    bootstrap_samples = [weighted_mean(get_bootstrap_sample(mu_estimates)) for i in range(1000)]
-    return mu_hat, [np.percentile(bootstrap_samples, 2.5), np.percentile(bootstrap_samples, 97.5)]
+    bootstrap_samples = [weighted_mean(get_bootstrap_sample(mu_estimates)) 
+                                                          for i in range(1000)]
+    return mu_hat, [np.percentile(bootstrap_samples, 2.5), 
+                    np.percentile(bootstrap_samples, 97.5)]
 
 
 def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
     def f(data):
-        return get_va(data, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
+        return get_va(data, var_theta_hat, var_epsilon_hat, var_mu_hat,
+                                                            jackknife)
         
     if jackknife:
-        results = np.vstack(df.groupby('teacher')[['size', 'mean score']].apply(f).values)
+        results = np.vstack(df.groupby('teacher')[['size', 
+                                                'mean score']].apply(f).values)
         df['va'], df['variance'] = zip(*results)
     else:        
-        results = np.vstack(df.groupby('teacher')[['size', 'mean score']].apply(f).values)
+        results = np.vstack(df.groupby('teacher')[['size', 
+                                                 'mean score']].apply(f).values)
         df = df.groupby('teacher').size().reset_index()
         df['va'], df['variance'] = zip(*results)
 
@@ -79,7 +84,7 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None,
 
     data = data[data['residual'].notnull()]  # Drop students with missing scores
     assert len(data) > 0
-        
+
     ssr = np.var(data['residual'].values)  # Calculate sum of squared residuals
 
     # Collapse data to class level
