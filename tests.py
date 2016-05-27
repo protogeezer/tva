@@ -16,7 +16,7 @@ def test_mu_covariances():
     
     # Simulate data
     df = pd.DataFrame()
-    df.loc[:, 'teacher'] = [int(elt) for elt in np.arange(0,n*.25,.25)]
+    df.loc[:, 'teacher'] = [int(elt) for elt in np.arange(0, n*.25, .25)]
     df.loc[:, 'class id'] = [int(elt) for elt in np.arange(0,n*.5, .5)]
     df.loc[:, 'type'] = [int(i%2 == 0) for i in range(n)]
     df.loc[:, 'size'] = [int(elt) for elt in np.random.normal(8,3,n)]
@@ -32,7 +32,8 @@ def test_mu_covariances():
         
     teacher_class_map = get_teacher_class_map(df, teachers)
     
-    var_mu_hat, cov_mu_hat = estimate_mu_covariances(df, teachers, teacher_class_map)
+    var_mu_hat, cov_mu_hat = estimate_mu_covariances(df, teachers,
+                                                     teacher_class_map)
 
     tolerance = 2
     assert var_mu_hat[0] > var_mu[0] / tolerance
@@ -176,10 +177,10 @@ def test_residualize():
     print(df.head())
     print(df.tail())
 
-    assert beta_hat[3] > beta[0] - tolerance
-    assert beta_hat[3] < beta[0] + tolerance
-    assert beta_hat[4] > beta[1] - tolerance
-    assert beta_hat[4] < beta[1] + tolerance
+    assert beta_hat[0] > beta[0] - tolerance
+    assert beta_hat[0] < beta[0] + tolerance
+    assert beta_hat[1] > beta[1] - tolerance
+    assert beta_hat[1] < beta[1] + tolerance
     
 
 #def test_two_types_covariances():
