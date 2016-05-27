@@ -13,13 +13,11 @@ def compute_estimates_once(input_tuple):
     column_names = {'person':'teacher', 'distcode':'class id', 
                     'month_id':'student id', 'outcome':'score'}
     data = simulate(params, assignments, i)
-    return
-    """
     return calculate_va(data, ['month_id'], True, 
                         categorical_controls=['distcode'], moments_only=True, 
                         class_level_vars = ['person', 'distcode'],
                         column_names=column_names)
-    """
+
 if __name__ == '__main__':
     n_iters = 1
 
@@ -35,7 +33,7 @@ if __name__ == '__main__':
     pool.close()
     pool.join()
     
-    var_mu_hat = np.array([elt[1] for elt in results])
+    var_mu_hat = np.array([elt[0] for elt in results])
     
     print(var_mu_hat)
     print(np.mean(var_mu_hat))
