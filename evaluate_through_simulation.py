@@ -19,7 +19,7 @@ def compute_estimates_once(input_tuple):
                         column_names=column_names)
 
 if __name__ == '__main__':
-    n_iters = 1
+    n_iters = 32
 
     assignments = pd.read_csv('/home/lizs/Documents/ias/data/indicus_cleaned.csv', \
                               usecols=['year', 'clean district name', 'person'])
@@ -38,6 +38,7 @@ if __name__ == '__main__':
     print(var_mu_hat)
     print(np.mean(var_mu_hat))
     print(np.var(var_mu_hat))
+    np.save('parameter_estimates/simulate_with_assignments_0.npy', var_mu_hat)
     
 """
     results = [[elt[0], elt[1], elt[2], elt[3][0], elt[3][1]] for elt in results]

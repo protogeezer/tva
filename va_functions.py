@@ -11,12 +11,10 @@ def estimate_var_epsilon(data):
     return var_epsilon_hat
     
 # Demeaning with one fixed effect
-def fe_demean(df, var_name, group):
-    def f(vector): # demean within each group
-        v = vector.values
-        return v - np.mean(v)
+def fe_demean(df, variables, group):
+    f = lambda df: df - np.mean(df.values, axis = 0)
         
-    return np.hstack(df.groupby(group)[var_name].apply(f).values)
+    return df.groupby(group)[variables].apply(f)
 
 # Calculates beta using y_name = x_names * beta + group_name (dummy) + dummy_control_name
 # Returns               y_name - x_names * beta - dummy_control_name
@@ -27,7 +25,7 @@ def residualize(df, y_name, x_names, first_group, second_groups = None):
         return y - np.mean(y), [np.mean(y)]
     else:
         x = df[x_names].values
-        x_demeaned = np.array([fe_demean(df, x, first_group) for x in x_names])
+        x_demeaned = fe_demean(df, x_names, first_group)
         
         if second_groups is not None: # If extra FE, create dummies
             dummy_df = pd.get_dummies(df, columns=second_groups)
