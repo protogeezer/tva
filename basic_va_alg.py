@@ -52,7 +52,8 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None,
     # Fix column names
     if column_names is not None:              
         data.rename(columns=column_names, inplace=True)
-        class_level_vars = [column_names[elt] for elt in class_level_vars]
+        class_level_vars = [column_names.get(elt, elt) 
+                            for elt in class_level_vars]
         if categorical_controls is not None:
             categorical_controls = [column_names[elt] 
                                     for elt in categorical_controls]
@@ -84,6 +85,7 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None,
 
     # Collapse data to class level
     # Count number of students in class
+
     class_df = data.groupby(class_level_vars).size().reset_index()
     class_df.columns = class_level_vars + ['size']
 
