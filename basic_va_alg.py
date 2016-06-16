@@ -1,16 +1,16 @@
 from va_functions import *
 import pandas as pd
 import warnings
-import random
 
 
 def estimate_mu_variance(data, n_iters):
     def f(vector):
-        try:
-            score_1, score_2 = random.sample(set(vector), 2)
-            return [score_1 * score_2, 1]
-        except ValueError:
-            return [0, 0]
+        vector = vector.values
+        val = 0
+        for i in range(1, len(vector)):
+            val += np.dot(vector[i:], vector[:-i])
+
+        return [val, len(vector) * (len(vector) -1) /2]
             
     def weighted_mean(arr):
         return np.sum(arr[:, 0]) / np.sum(arr[:, 1])
@@ -27,35 +27,56 @@ def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
         return get_va(data, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
         
     if jackknife:
-        results = df.groupby('teacher')[['size', 'mean score']].apply(f).values
-        df.loc[:, 'va'] = np.hstack(results)
-    else:
-        results = pd.DataFrame(df.groupby('teacher')[['size', 'mean score']].apply(f).reset_index())
-        results.columns = ['teacher', 'va']
-        df = pd.merge(df, results)
+        results = np.vstack(df.groupby('teacher')[['size', 'mean score']].apply(f).values)
+        df['va'], df['variance'] = zip(*results)
+    else:        
+        results = np.vstack(df.groupby('teacher')[['size', 'mean score']].apply(f).values)
+        df = df.groupby('teacher').size().reset_index()
+        df['va'], df['variance'] = zip(*results)
 
     return df
+    
 
 # Returns VA's and important moments
 # a residual can be specified
 # Covariates is a list like ['prev score', 'free lunch']
 # Column names can specify 'class id', 'student id', and 'teacher'
 # class_level_vars can contain any variables are constant at the class level and will stay in the final data set
-def calculate_va(data, covariates, jackknife, residual=None, moments=None, column_names=None, class_level_vars=['teacher', 'class id'], categorical_controls = [], moments_only = False):
+def calculate_va(data, covariates, jackknife, residual=None, moments=None, 
+                 column_names=None, class_level_vars=['teacher', 'class id'], 
+                 categorical_controls = None, moments_only = False):
     ## First, a bunch of data processing
     if moments is None:
         moments = {}
 
-
     # Fix column names
     if column_names is not None:              
         data.rename(columns=column_names, inplace=True)
-
+        class_level_vars = [column_names.get(elt, elt) 
+                            for elt in class_level_vars]
+        if categorical_controls is not None:
+            categorical_controls = [column_names[elt] 
+                                    for elt in categorical_controls]
+        if covariates is not None:
+            covariates = [column_names[elt] for elt in covariates]
+            
+    assert 'teacher' in data.columns
+    
+    if 'teacher' not in class_level_vars:
+        warnings.warn(' \'teacher\' or its analog (as specified by the \
+                      \'column_names\' argument) was not included in \
+                      \'class_level_vars\'. It will be added to \
+                      \'class_level_vars\': There cannot be multiple teachers \
+                      per class.')
+        class_level_vars.append('teacher')
+ 
+  
     # If a residual was not included, residualize scores
     if residual is None:
-        data.loc[:, 'residual'], beta = residualize(data, 'score', covariates, 'teacher', categorical_controls)
+        data.loc[:, 'residual'], beta = residualize(data, 'score', covariates,
+                                               'teacher', categorical_controls)
     else:
-        data.rename(columns={residual: 'residual'}, inplace=True)
+        data.rename(columns={residual: 'residual'}, inplace=True) 
 
     data = data[data['residual'].notnull()]  # Drop students with missing scores
     assert len(data) > 0
@@ -64,12 +85,15 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
 
     # Collapse data to class level
     # Count number of students in class
+
     class_df = data.groupby(class_level_vars).size().reset_index()
     class_df.columns = class_level_vars + ['size']
 
     # Calculate mean and merge it back into class-level data
-    class_df.loc[:, 'mean score'] = data.groupby(class_level_vars)['residual'].mean().values
-    class_df.loc[:, 'var'] = data.groupby(class_level_vars)['residual'].var().values
+    class_df.loc[:, 'mean score'] = \
+                        data.groupby(class_level_vars)['residual'].mean().values
+    class_df.loc[:, 'var'] = \
+                         data.groupby(class_level_vars)['residual'].var().values
     assert len(class_df) > 0
     
     if jackknife: # Drop teachers teaching only one class
@@ -78,28 +102,30 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None, colum
     ## Second, calculate a bunch of moments
     # Calculate variance of epsilon
     var_epsilon_hat = estimate_var_epsilon(class_df)
-    assert var_epsilon_hat > 0 
 
     # Estimate TVA variances and covariances
     if 'var mu' in moments:
         var_mu_hat = moments['var mu']
     else:
-        var_mu_hat, var_mu_hat_ci = estimate_mu_variance(class_df)
-    if var_mu_hat <= 0:
-        warnings.warn('Var mu hat is negative. Measured to be ' + str(var_mu_hat))
-        var_mu_hat = 0
+        var_mu_hat, var_mu_hat_ci = estimate_mu_variance(class_df, 1000)
 
     # Estimate variance of class-level shocks
     var_theta_hat = ssr - var_mu_hat - var_epsilon_hat
     if var_theta_hat < 0:
         warnings.warn('Var theta hat is negative. Measured to be ' + str(var_theta_hat))
         var_theta_hat = 0
+        
+    if var_mu_hat <= 0:
+        warnings.warn('Var mu hat is negative. Measured to be ' + str(var_mu_hat))
 
     if moments_only:
         return var_mu_hat, var_theta_hat, var_epsilon_hat, var_mu_hat_ci
-        
-    results = get_each_va(class_df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
-    if column_names is not None:
-        results.rename(columns={column_names[key]:key for key in column_names}, inplace=True)
+    
+    if var_mu_hat > 0: # Don't get teacher-level results if zero variance
+        results = get_each_va(class_df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
+        if column_names is not None:
+            results.rename(columns={column_names[key]:key for key in column_names}, inplace=True)
+    else:
+        results = None
     
     return results, var_mu_hat, var_theta_hat, var_epsilon_hat, var_mu_hat_ci
