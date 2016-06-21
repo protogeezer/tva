@@ -21,8 +21,8 @@ def reassign(state_df, time_var, district, switch_fraction):
     
     times = sorted(set(state_df[time_var]))
     last_df = state_df[state_df[time_var] == times[0]]
-    last_assignments_from_orig = dict(zip(last_df['person'], last_df[district]))
-    last_people = set(last_df['person'])
+    last_assignments_from_orig = dict(zip(last_df[district], last_df['person']))
+    last_districts = set(last_df[district])
     
     text = Text(state_df['state'].values[0])
     text.append(last_assignments_from_orig)
@@ -32,9 +32,20 @@ def reassign(state_df, time_var, district, switch_fraction):
         current_df = state_df[indices]
             
         current_people = set(current_df['person'])
+        if len(current_people) != len(current_df): # someone is duplicated; drop duplicates
+            _, ind = np.unique(current_df['person'].values, return_index = True)
+#            print(ind)
+#            print(current_df[['person', district]])
+#            print(current_df.index)
+#            print(current_df.index[ind])
+            current_df = current_df.iloc[ind]
+#            print(current_df[['person', district]])
+        
         current_districts = set(current_df[district])
-        current_assignments_from_orig = dict(zip(current_df['person'], 
-                                                 current_df[district]))
+        assert len(current_people) == len(current_df)
+        assert len(current_districts) == len(current_df)
+        current_assignments_from_orig = dict(zip(current_df[district],
+                                                 current_df['person']))
         text.append(t)
         text.append('original assignments')
         text.append(current_assignments_from_orig)
@@ -43,14 +54,12 @@ def reassign(state_df, time_var, district, switch_fraction):
         AND are assigned to the same district in both period. 
         Find the districts they go with.
         """
-        people_continuing_in_district \
-                  = list(filter(lambda person: last_assignments_from_orig[person] \
-                                            == current_assignments_from_orig[person],
-                               current_people & last_people))
-        text.append('people continuing in district: ')
-        text.append(people_continuing_in_district)
-        districts_with_continuing_people = [last_assignments_from_orig[person] 
-                                    for person in people_continuing_in_district]
+        districts_with_continuing_people = \
+                     list(filter(lambda dist: last_assignments_from_orig[dist] \
+                                         == current_assignments_from_orig[dist],
+                                 current_districts & last_districts))
+        people_continuing_in_district = [last_assignments_from_orig[dist]
+                                         for dist in districts_with_continuing_people]
                           
         other_people = list(set(current_people) \
                        - set(people_continuing_in_district))
@@ -76,77 +85,28 @@ def reassign(state_df, time_var, district, switch_fraction):
                                                 switch_fraction)
         assert(set(new_person_assignments) == current_people)
         assert(set(district_assignments) == current_districts)
-        assignments = dict(zip(new_person_assignments, district_assignments))
+        assert(len(district_assignments) == len(new_person_assignments))
+        assignments = dict(zip(district_assignments, new_person_assignments))
         text.append('simulated assignments')
         text.append(assignments)
         # Update data with new changes
-        state_df.loc[indices, district] = \
-                       [assignments[person] for person in current_df['person']]
-        
+        try:
+            state_df.loc[indices, 'person'] = \
+                            [assignments.get(dist, 'NaN') 
+                             for dist in state_df.loc[indices, district]]
+#                            [assignments[dist] for dist in current_df[district]]
+        except ValueError:
+            print(text)
+            print(current_df[['person', district]])
+            assert False
         last_assignments_from_orig = current_assignments_from_orig
-        last_people = current_people
+        last_districts = current_districts
 
 #    print(text)
     return state_df
-
-
-#def reassign(state_df, time_var, district, switch_fraction):
-#    state_df = state_df.reset_index()
-#    times = sorted(set(state_df[time_var]))
-#    last_df = state_df[state_df[time_var] == times[0]]
-#    last_assignments = dict(zip(last_df['person'], last_df[district]))
-#    last_people = set(last_df['person'])
-#    
-#    
-#    for t in times[1:]:
-#        current_df = state_df[state_df[time_var] == t]
-#        indices = current_df.index.values
-#        current_people = current_df['person']
-#        current_districts = current_df[district]
-#        current_assignments = dict(zip(current_people, current_districts))
-#        
-#        """
-#        Find people who are in the state in the current period and last period,
-#        AND are assigned to the same district in both period. 
-#        Find the districts they go with.
-#        """
-#        people_continuing_in_district \
-#                  = list(filter(lambda person: last_assignments[person] \
-#                                           == current_assignments[person],
-#                               set(current_people) & set(last_people)))
-
-#        # Boolean indices, then integer indices
-#        continuation_indices = [person in people_continuing_in_district 
-#                                for person in current_people]
-#        other_indices = [not x for x in continuation_indices]
-#        continuation_indices = indices[np.array(continuation_indices)]
-#        other_indices = indices[np.array(other_indices)]
-
-# 
-#        """ 
-#        Create new assignments:
-#            - People who continue in the same district do so
-#            - Everyone else is randomly assigned to one of the other districts
-#        """
-#        district_indices = np.concatenate((continuation_indices, other_indices))
-#        np.random.shuffle(other_indices)
-#        person_indices = np.concatenate((continuation_indices, other_indices))
-#        # Randomly switch some people
-#        person_indices = subset_shuffle(np.array(person_indices), switch_fraction)
-#        # Update data with new changes
-#        last_people = current_people[person_indices]
-#        last_districts = current_districts[district_indices]
-#        state_df.iloc[indices][['person', district]] = np.vstack((last_people,
-#                                                                  last_districts)).T
-#        last_assignments = dict(zip(last_people, last_districts))
-
-#        
-#    return state_df
-
     
 def simulate(df, seed_increment, switch_fraction, time_var):
     np.random.seed(seed_increment)
     district = 'clean district name'
     return df.groupby('state').apply(lambda x: \
                                      reassign(x, time_var, district, switch_fraction))
-    
