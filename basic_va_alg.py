@@ -15,23 +15,30 @@ def estimate_mu_variance(data, n_iters):
     def weighted_mean(arr):
         return np.sum(arr[:, 0]) / np.sum(arr[:, 1])
         
-    mu_estimates = np.array(list(data.groupby('teacher')['mean score'].apply(f).values))
+    mu_estimates = np.array(list(data.groupby('teacher')['mean score']\
+                                     .apply(f).values))
     mu_hat = weighted_mean(mu_estimates)
     
-    bootstrap_samples = [weighted_mean(get_bootstrap_sample(mu_estimates)) for i in range(1000)]
-    return mu_hat, [np.percentile(bootstrap_samples, 2.5), np.percentile(bootstrap_samples, 97.5)]
+    bootstrap_samples = [weighted_mean(get_bootstrap_sample(mu_estimates)) 
+                         for i in range(1000)]
+    return mu_hat, [np.percentile(bootstrap_samples, 2.5), 
+                    np.percentile(bootstrap_samples, 97.5)]
 
 
 def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
-    def f(data):
-        return get_va(data, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
-        
-    if jackknife:
-        results = np.vstack(df.groupby('teacher')[['size', 'mean score']].apply(f).values)
-        df['va'], df['variance'] = zip(*results)
-    else:        
-        results = np.vstack(df.groupby('teacher')[['size', 'mean score']].apply(f).values)
-        df = df.groupby('teacher').size().reset_index()
+    # Get unshrunk VA
+    f = lambda data: get_unshrunk_va(data, var_theta_hat, var_epsilon_hat 
+                                   , jackknife)
+    df['unshrunk va']  = df.groupby('teacher')[['size', 'mean score']]\
+                           .apply(f).values
+    if var_mu_hat > 0:
+        f = lambda data: get_va(data, var_theta_hat, var_epsilon_hat, var_mu_hat
+                              , jackknife)
+        results = df.groupby('teacher')[['size', 'mean score']].apply(f).values
+
+        if not jackknife: # collapse to teacher leel
+            df = df.groupby('teacher').size().reset_index()
+
         df['va'], df['variance'] = zip(*results)
 
     return df
@@ -44,7 +51,7 @@ def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
 # class_level_vars can contain any variables are constant at the class level and will stay in the final data set
 def calculate_va(data, covariates, jackknife, residual=None, moments=None, 
                  column_names=None, class_level_vars=['teacher', 'class id'], 
-                 categorical_controls = None, moments_only = False):
+                 categorical_controls = None, moments_only = False, quietly=False):
     ## First, a bunch of data processing
     if moments is None:
         moments = {}
@@ -81,7 +88,7 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None,
     data = data[data['residual'].notnull()]  # Drop students with missing scores
     assert len(data) > 0
         
-    ssr = np.var(data['residual'].values)  # Calculate sum of squared residuals
+    ssr = np.var(data['residual'])  # Calculate sum of squared residuals
 
     # Collapse data to class level
     # Count number of students in class
@@ -112,20 +119,19 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None,
     # Estimate variance of class-level shocks
     var_theta_hat = ssr - var_mu_hat - var_epsilon_hat
     if var_theta_hat < 0:
-        warnings.warn('Var theta hat is negative. Measured to be ' + str(var_theta_hat))
+        if not quietly:
+            warnings.warn('Var theta hat is negative. Measured to be ' +\
+                           str(var_theta_hat))
         var_theta_hat = 0
         
-    if var_mu_hat <= 0:
-        warnings.warn('Var mu hat is negative. Measured to be ' + str(var_mu_hat))
-
+    if var_mu_hat <= 0 and not quietly:
+        warnings.warn('Var mu hat is negative. Measured to be '+ str(var_mu_hat))
     if moments_only:
         return var_mu_hat, var_theta_hat, var_epsilon_hat, var_mu_hat_ci
-    
-    if var_mu_hat > 0: # Don't get teacher-level results if zero variance
-        results = get_each_va(class_df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife)
-        if column_names is not None:
-            results.rename(columns={column_names[key]:key for key in column_names}, inplace=True)
-    else:
-        results = None
+    results = get_each_va(class_df, var_theta_hat, var_epsilon_hat
+                       , var_mu_hat, jackknife)
+    if column_names is not None:
+        results.rename(columns={column_names[key]:key 
+                                for key in column_names}, inplace=True)
     
     return results, var_mu_hat, var_theta_hat, var_epsilon_hat, var_mu_hat_ci
