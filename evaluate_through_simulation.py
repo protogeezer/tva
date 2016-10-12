@@ -13,27 +13,33 @@ def compute_estimates_once(input_tuple):
     column_names = {'person':'teacher', 'distcode':'class id', 
                     'month_id':'student id', 'outcome':'score'}
     data = simulate(params, assignments, i)
-    return calculate_va(data, ['month_id'], True, 
-                        categorical_controls=['distcode'], moments_only=True, 
+    return calculate_va(data, ['month_id'], False, 
+                        categorical_controls=['distcode'], moments_only=False, 
                         class_level_vars = ['person', 'distcode'],
                         column_names=column_names)
 
 if __name__ == '__main__':
-    n_iters = 32
+    #iters = list(range(4, 10))
+    iters = [4]
 
-    assignments = pd.read_csv('/home/lizs/Documents/ias/data/indicus_cleaned.csv', \
-                              usecols=['year', 'clean district name', 'person'])
+    assignments = pd.read_csv('/Users/lizs/Documents/ias/data/indicus_cleaned.csv', \
+                              usecols=['fiscal year', 'clean district name', 'person'])
     assignments.rename(columns = {'clean district name': 'distcode', 
-                                  'year':'month_id'}, 
+                                  'fiscal year':'month_id'}, 
                        inplace = True)
 
-    num_cores = min(cpu_count(), n_iters)
-    pool = Pool(num_cores)
-    results = pool.map(compute_estimates_once, [(i, assignments) for i in range(n_iters)])
-    pool.close()
-    pool.join()
+    parallel = False
+    tuples = ((i, assignments) for i in iters)
+    if parallel:
+        num_cores = min(cpu_count(), len(iters))
+        pool = Pool(num_cores)
+        results = pool.map(compute_estimates_once, tuples)
+        pool.close()
+        pool.join()
+    else:
+        results = [compute_estimates_once(t) for t in tuples]
     
-    var_mu_hat = np.array([elt[0] for elt in results])
+    var_mu_hat = np.array([elt[1] for elt in results])
     
     print(var_mu_hat)
     print(np.mean(var_mu_hat))
