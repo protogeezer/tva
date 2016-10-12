@@ -4,6 +4,67 @@ import pandas as pd
 import scipy.sparse as sparse
 
 
+class Groupby:
+    def __init__(self, keys, already_dense = False):
+        if already_dense:
+            self.keys_as_int = keys
+        else:
+            _, self.keys_as_int = np.unique(keys, return_inverse = True)
+        self.n_keys = max(self.keys_as_int)
+        self.set_indices()
+
+    def set_indices(self):
+        self.indices = [[] for i in range(self.n_keys + 1)]
+        for i, k in enumerate(self.keys_as_int):
+            self.indices[k].append(i)
+        self.indices = [np.array(elt) for elt in self.indices]
+
+    def apply(self, function, vector):
+        result = np.zeros(len(vector))
+        for k in range(self.n_keys):
+            result[self.indices[k]] = function(vector[self.indices[k]])
+        return result
+
+def find_collinear(matrix, tol):
+    _, r = np.linalg.qr(matrix)
+    # find collinear columns by looking at diagonals of r
+    n, k = matrix.shape
+    collinear_cols = [False for i in range(k)]
+    row_idx = 0
+    col_idx = 0
+    for col_idx in range(k):
+        collinear = abs(r[row_idx, col_idx]) < tol
+        if collinear:
+            collinear_cols[col_idx] = True
+        else:
+            row_idx = row_idx + 1
+
+    return collinear_cols
+
+# create lags
+def make_lags(df, n_lags_back, n_lags_forward, outcomes, groupby, fill_zeros=True):
+    lags = list(range(-1 * n_lags_forward, 0)) + list(range(1, n_lags_back+1))
+    # First sort
+    grouped = Groupby(groupby)
+
+    for out in outcomes:
+        for lag in lags:
+            df[out + '_lag_' + str(lag)] = grouped.apply(lambda x: x.shift(lag), df[out].values)
+
+    lag_vars = {out: [out + '_lag_' + str(lag) for lag in lags]
+                for out in outcomes}
+
+    if fill_zeros:
+        for out in outcomes:
+            for lag_var in lag_vars[out]:
+                missing = pd.isnull(df[lag_var])
+                df[lag_var + '_mi'] = missing.astype(int)
+                df.loc[missing, lag_var] = 0
+            lag_vars[out] = lag_vars[out] + [out + '_lag_' + str(lag) + '_mi']    
+
+    return df, lag_vars
+
+
 def estimate_var_epsilon(data):
     data = data[data['var'].notnull()]
     var_epsilon_hat = np.dot(data['var'].values, data['size'].values)/np.sum(data['size'])
@@ -85,6 +146,8 @@ def binscatter(x, y, nbins):
     bins = np.zeros(nbins)
     y_means = np.zeros(nbins)
     y_medians = np.zeros(nbins)
+    y_5 = np.zeros(nbins)
+    y_95 = np.zeros(nbins)
     
     for i in range(0, nbins):
         start = len(x) * i / nbins
@@ -92,7 +155,10 @@ def binscatter(x, y, nbins):
         bins[i] = np.mean(x[int(start):int(end)])
         y_means[i] = np.mean(y[int(start):int(end)])
         y_medians[i] = np.median(y[int(start):int(end)])
-    return bins, y_means, y_medians
+        y_5[i] = np.percentile(y[int(start):int(end)], 5)
+        y_95[i] = np.percentile(y[int(start):int(end)], 95)
+
+    return bins, y_means, y_medians, y_5, y_95
 
 
 def check_calibration(errors, precisions):         
