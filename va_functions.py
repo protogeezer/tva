@@ -25,6 +25,70 @@ class Groupby:
             result[self.indices[k]] = function(vector[self.indices[k]])
         return result
 
+
+def make_reg_table(reg_obj, var_names, categorical_controls):
+    def format(param, t_stat, se):
+        if abs(t_stat) > 3.291:
+            stars = '***'
+        elif abs(t_stat) > 2.576:
+            stars = '**'
+        elif abs(t_stat) > 1.96:
+            stars = '*'
+        else: stars = '*'
+        return (str(int(round(param * 1000)) / 1000) + stars
+              , '(' + str(int(round(se * 1000)) / 1000) + ')')
+
+
+    coef_col = reduce(lambda x, y: x + y
+                    , (format(p, t, se) 
+                       for p, t, se 
+                       in zip(reg_obj.params, reg_obj.tvalues, reg_obj.bse)))
+    tuples = [(name, type) for name in var_names for type in ('beta', 'se')]
+    coef_col = pd.Series(coef_col, index=pd.MultiIndex.from_tuples(tuples))
+
+    # Just keep the ones that are not categorical
+    keeps = [all([cat not in t[0] for cat in categorical_controls]) 
+                                  for t in tuples]
+    coef_col = coef_col[keeps]
+    for cat in categorical_controls:
+        vars = [cat in v for v in var_names]
+        B = np.zeros((sum(vars), len(var_names)))
+        for i, idx in enumerate(np.where(np.array(vars))[0]):
+            B[i, idx] = 1
+        f_results = reg_obj.f_test(B).__dict__
+        coef_col[(cat, 'F')] = f_results['fvalue'][0][0]
+        coef_col[(cat, 'p')] = '(' + str(int(round(f_results['pvalue'] * 1000)) / 1000) + ')'
+
+    coef_col[('N', '')] = reg_obj.df_resid + len(var_names) + 1
+    coef_col[('R-squared', '')] = reg_obj.rsquared
+    return coef_col
+
+
+# List of regression objects; list of lists of controls
+def make_table(regs, controls, categorical_controls):
+    tab =  pd.concat((make_reg_table(x, var_names, categorical_controls) 
+                      for x, var_names in zip(regs, controls)), axis=1)
+    # order columns better
+    constant = tab.select(lambda x: x[0] == 'constant')
+    beta_parts = tab.select(lambda x: x[1] in ('beta', 'se') 
+                                      and x[0] != 'constant')
+
+    beta_not_null = beta_parts[pd.notnull(beta_parts.iloc[:, 0])]
+    beta_null = beta_parts[pd.isnull(beta_parts.iloc[:, 0])]
+    F_parts = tab.select(lambda x: x[1] in ('F', 'p'))
+    rest = tab.select(lambda x: x[1] == '')
+
+    tab = pd.concat((constant, beta_not_null, beta_null, F_parts, rest))
+    
+    for col in tab.columns:
+        tab.loc[pd.isnull(tab.loc[:, col]), col] = ''
+
+    tab = tab.reset_index()
+    tab.iloc[1:-2:2, 0] = ''
+
+    return tab.drop('level_1', axis=1)
+
+
 def find_collinear(matrix, tol):
     _, r = np.linalg.qr(matrix)
     # find collinear columns by looking at diagonals of r
@@ -45,11 +109,18 @@ def find_collinear(matrix, tol):
 def make_lags(df, n_lags_back, n_lags_forward, outcomes, groupby, fill_zeros=True):
     lags = list(range(-1 * n_lags_forward, 0)) + list(range(1, n_lags_back+1))
     # First sort
-    grouped = Groupby(groupby)
+    grouped = Groupby(df[groupby].values)
+
+    def shift(v, lag):
+        x = np.roll(v, lag)
+        x[lag:] = float('nan')
+        return x
 
     for out in outcomes:
         for lag in lags:
-            df[out + '_lag_' + str(lag)] = grouped.apply(lambda x: x.shift(lag), df[out].values)
+            df[out + '_lag_' + str(lag)] = grouped.apply(lambda x: shift(x, lag)
+                                                       , df[out].astype('float')\
+                                                                .values)
 
     lag_vars = {out: [out + '_lag_' + str(lag) for lag in lags]
                 for out in outcomes}
@@ -60,7 +131,7 @@ def make_lags(df, n_lags_back, n_lags_forward, outcomes, groupby, fill_zeros=Tru
                 missing = pd.isnull(df[lag_var])
                 df[lag_var + '_mi'] = missing.astype(int)
                 df.loc[missing, lag_var] = 0
-            lag_vars[out] = lag_vars[out] + [out + '_lag_' + str(lag) + '_mi']    
+                lag_vars[out] = lag_vars[out] + [out + '_lag_' + str(lag) + '_mi']    
 
     return df, lag_vars
 
