@@ -4,6 +4,21 @@ import pandas as pd
 import scipy.sparse as sparse
 from functools import reduce
 
+toString = lambda *x: '\n'.join((str(elt) for elt in x))
+# For printing stuff
+# sample use
+# text = Test('teaher number', teacher_number)
+# text.append('observation number', observation_number, other_number)
+# print(text)
+class Text(object): 
+    def __init__(self, *string):
+        self.text = toString(*string)
+    def append(self, *string):
+        self.text = self.text + '\n' + toString(*string)
+    def __str__(self):
+        return '\n\n\n' + self.text
+
+
 
 class Groupby:
     def __init__(self, keys, already_dense = False):
@@ -140,7 +155,8 @@ def make_lags(df, n_lags_back, n_lags_forward, outcomes, groupby, fill_zeros=Tru
 
 def estimate_var_epsilon(data):
     data = data[data['var'].notnull()]
-    var_epsilon_hat = np.dot(data['var'].values, data['size'].values)/np.sum(data['size'])
+    var_epsilon_hat = np.dot(data['var'].values, data['size'].values)\
+                      /np.sum(data['size'])
     assert var_epsilon_hat > 0
     return var_epsilon_hat
     
@@ -240,31 +256,43 @@ def check_calibration(errors, precisions):
 
     standardized_errors = errors**2 * precisions
     mean_standardized_error = np.mean(standardized_errors)
-    standardized_error_se = (np.var(standardized_errors) / len(standardized_errors))**.5
+    standardized_error_se = (np.var(standardized_errors) / \
+                             len(standardized_errors))**.5
     assert mean_error > -3 * se
     assert mean_error < 3 * se
     assert mean_standardized_error > 1 - 2 * standardized_error_se 
     assert mean_standardized_error < 1 + 2 * standardized_error_se 
 
-# Now returns [mu-hat, variance of mu-hat]
+
+def get_unshrunk_va(df, var_theta_hat, var_epsilon_hat, jackknife):
+    array = df.values
+    if jackknife:
+        unshrunk = np.array(np.sum(array[:, 1]) - array[:, 1]) / (len(array)-1)
+    else:
+        unshrunk = np.mean(array[:, 1])
+
+    return pd.DataFrame(data=unshrunk)
+
 def get_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
+    assert(var_mu_hat > 0)
     array = df.values
     precisions = np.array([1 / (var_theta_hat + var_epsilon_hat / class_size) 
                           for class_size in array[:, 0]])
     numerators = precisions * array[:, 1]
-
     precision_sum = np.sum(precisions)
     num_sum = np.sum(numerators)
-    # TODO: also return unshrunk va and variance
     if jackknife:
         denominators = np.array([precision_sum - p for p in precisions]) \
                  + 1 / var_mu_hat
-        return [[(num_sum - n) / d, 1 / d]
-                          for n, d in zip(numerators, denominators)]
+        return_val =[[(num_sum - n) / d, 1 / d]
+                         for n, d in zip(numerators, denominators)]
     else:
         denominator = precision_sum + 1 / var_mu_hat
-        return [num_sum / denominator, 1 / denominator]
-        
+        return_val = [[num_sum / denominator, 1 / denominator]]
+
+    return pd.DataFrame(data=np.array(return_val))
+
+
 def get_bootstrap_sample(myList):
     indices = np.random.choice(range(len(myList)), len(myList))
     return myList[indices]
