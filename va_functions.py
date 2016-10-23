@@ -2,6 +2,7 @@ import numpy as np
 import numpy.linalg as linalg
 import pandas as pd
 import scipy.sparse as sparse
+from functools import reduce
 
 
 class Groupby:
@@ -51,13 +52,14 @@ def make_reg_table(reg_obj, var_names, categorical_controls):
                                   for t in tuples]
     coef_col = coef_col[keeps]
     for cat in categorical_controls:
-        vars = [cat in v for v in var_names]
-        B = np.zeros((sum(vars), len(var_names)))
-        for i, idx in enumerate(np.where(np.array(vars))[0]):
-            B[i, idx] = 1
-        f_results = reg_obj.f_test(B).__dict__
-        coef_col[(cat, 'F')] = f_results['fvalue'][0][0]
-        coef_col[(cat, 'p')] = '(' + str(int(round(f_results['pvalue'] * 1000)) / 1000) + ')'
+        coef_col[(cat, 'F')] = 'X'
+        #vars = [cat in v for v in var_names]
+        #B = np.zeros((sum(vars), len(var_names)))
+        #for i, idx in enumerate(np.where(np.array(vars))[0]):
+        #    B[i, idx] = 1
+        #f_results = reg_obj.f_test(B).__dict__
+        #coef_col[(cat, 'F')] = f_results['fvalue'][0][0]
+        #coef_col[(cat, 'p')] = '(' + str(int(round(f_results['pvalue'] * 1000)) / 1000) + ')'
 
     coef_col[('N', '')] = reg_obj.df_resid + len(var_names) + 1
     coef_col[('R-squared', '')] = reg_obj.rsquared
