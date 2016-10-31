@@ -135,6 +135,7 @@ def make_lags(df, n_lags_back, n_lags_forward, outcomes, groupby, fill_zeros=Tru
 
     for out in outcomes:
         for lag in lags:
+            # TODO: see if using .loc would be more memory efficient
             df[out + '_lag_' + str(lag)] = grouped.apply(lambda x: shift(x, lag)
                                                        , df[out].astype('float')\
                                                                 .values)
