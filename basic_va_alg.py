@@ -55,7 +55,7 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None,
     ## First, a bunch of data processing
     if moments is None:
         moments = {}
-
+        
     # Fix column names
     if column_names is not None:              
         data.rename(columns=column_names, inplace=True)
