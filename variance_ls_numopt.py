@@ -10,8 +10,21 @@ import numpy as np
 from scipy.optimize import check_grad, newton
 
 
+def get_ll(sigma_squared, mu, V):
+    sigma_squared_plus_V = sigma_squared + V
+    return np.sum(np.log(sigma_squared_plus_V)) + np.sum(mu**2 / sigma_squared_plus_V)
+
+
+def get_grad(sigma_squared, mu, V):
+    sigma_squared_plus_V = sigma_squared + V
+    return np.sum(1 / sigma_squared_plus_V) - np.sum(mu**2 / sigma_squared_plus_V**2)
+
+
+def get_hessian(sigma_squared, mu, V):
+    sigma_squared_plus_V = sigma_squared + V
+    return -1 * np.sum((1 / sigma_squared_plus_V)**2) + 2 * np.sum(mu**2 / sigma_squared_plus_V**3)
+
 # TODO: incorporate delta
-@profile
 def get_ll_grad_hess(sigma_squared, mu_hat, V):
     J = len(mu_hat)
     assert J == len(V)
