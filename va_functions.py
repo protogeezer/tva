@@ -19,29 +19,6 @@ class Text(object):
         return '\n\n\n' + self.text
 
 
-
-class Groupby:
-    def __init__(self, keys, already_dense = False):
-        if already_dense:
-            self.keys_as_int = keys
-        else:
-            _, self.keys_as_int = np.unique(keys, return_inverse = True)
-        self.n_keys = max(self.keys_as_int)
-        self.set_indices()
-
-    def set_indices(self):
-        self.indices = [[] for i in range(self.n_keys + 1)]
-        for i, k in enumerate(self.keys_as_int):
-            self.indices[k].append(i)
-        self.indices = [np.array(elt) for elt in self.indices]
-
-    def apply(self, function, vector):
-        result = np.zeros(len(vector))
-        for k in range(self.n_keys):
-            result[self.indices[k]] = function(vector[self.indices[k]])
-        return result
-
-
 def make_reg_table(reg_obj, var_names, categorical_controls):
     def format(param, t_stat, se):
         if abs(t_stat) > 3.291:
@@ -194,9 +171,12 @@ def residualize(df, y_name, x_names, first_group, second_groups = None):
                 x_demeaned = dummies
 
         beta = linalg.lstsq(x_demeaned, y)[0]
+        print('Beta from original ', beta[:10])
         resid = y - np.dot(x, beta)
+        print('Resid from original ', resid[:10])
         return resid - np.mean(resid), beta
                 
+
 # Mean 0, variance 1
 def normalize(vector):
     vector = vector - np.mean(vector)
