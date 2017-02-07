@@ -1,28 +1,28 @@
-from va_functions import *
+from va_functions import remove_duplicates, estimate_var_epsilon
+from functools import reduce
 import pandas as pd
 import warnings
+import numpy as np
+import scipy.sparse as sps
+import sys
+sys.path += ['/Users/lizs/hdfe/']
+from hdfe import Groupby
+from variance_ls_numopt import get_ll, get_grad, get_hessian
+from scipy.optimize import minimize
 
 
-def estimate_mu_variance(data, n_iters):
+def estimate_mu_variance(data, teacher):
     def f(vector):
-        vector = vector.values
         val = 0
         for i in range(1, len(vector)):
             val += np.dot(vector[i:], vector[:-i])
 
-        return [val, len(vector) * (len(vector) -1) /2]
+        return np.array([val, len(vector) * (len(vector) - 1) /2])
             
-    def weighted_mean(arr):
-        return np.sum(arr[:, 0]) / np.sum(arr[:, 1])
-        
-    mu_estimates = np.array(list(data.groupby('teacher')['mean score']\
-                                     .apply(f).values))
-    mu_hat = weighted_mean(mu_estimates)
-    
-    bootstrap_samples = [weighted_mean(get_bootstrap_sample(mu_estimates)) 
-                         for i in range(1000)]
-    return mu_hat, [np.percentile(bootstrap_samples, 2.5), 
-                    np.percentile(bootstrap_samples, 97.5)]
+    # First column is sum of all products, by teacher; second is number of products, by teacher
+    mu_estimates = Groupby(data[teacher].values)\
+                    .apply(f, data['mean score'].values, width=2)
+    return np.sum(mu_estimates[:, 0]) / np.sum(mu_estimates[:, 1])
 
 
 def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
@@ -42,53 +42,117 @@ def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
         df['va'], df['variance'] = zip(*results)
 
     return df
-    
 
-# Returns VA's and important moments
-# a residual can be specified
-# Covariates is a list like ['prev score', 'free lunch']
-# Column names can specify 'class id', 'student id', and 'teacher'
-# class_level_vars can contain any variables are constant at the class level and will stay in the final data set
-def calculate_va(data, covariates, jackknife, residual=None, moments=None, 
-                 column_names=None, class_level_vars=['teacher', 'class id'], 
-                 categorical_controls = None, moments_only = False, quietly=False):
-    ## First, a bunch of data processing
-    if moments is None:
-        moments = {}
-        
-    # Fix column names
-    if column_names is not None:              
-        data.rename(columns=column_names, inplace=True)
-        class_level_vars = [column_names.get(elt, elt) 
-                            for elt in class_level_vars]
-        if categorical_controls is not None:
-            categorical_controls = [column_names[elt] 
-                                    for elt in categorical_controls]
-        if covariates is not None:
-            covariates = [column_names[elt] for elt in covariates]
-            
-    assert 'teacher' in data.columns
-    
-    if 'teacher' not in class_level_vars:
-        warnings.warn(' \'teacher\' or its analog (as specified by the \
-                      \'column_names\' argument) was not included in \
-                      \'class_level_vars\'. It will be added to \
-                      \'class_level_vars\': There cannot be multiple teachers \
-                      per class.')
-        class_level_vars.append('teacher')
- 
-  
-    # If a residual was not included, residualize scores
-    if residual is None:
-        data.loc[:, 'residual'], beta = residualize(data, 'score', covariates,
-                                               'teacher', categorical_controls)
+
+def make_dummies(elt):
+        return sps.csc_matrix((np.ones(len(elt)), (range(len(elt)), elt)))
+
+
+def fk_alg(data, outcome, teacher, dense_controls, 
+        categorical_controls, jackknife, moments_only, add_constant):
+    """
+    This file implements a value-added estimator inspired by
+    Fessler and Kasy 2016, "How to Use Economic Theory to Improve Estimators." Documentation available via pdf.
+    I believe something similar has been used in a 
+    different value-added paper.
+    TODO: Teacher-level controls
+    """
+    if not moments_only:
+        raise NotImplementedError('Please set moments_only to True')
+
+    n_teachers = max(data[teacher]) + 1
+    n = len(data)
+
+    teacher_dummies = make_dummies(data[teacher])
+    if categorical_controls is None:
+        dummies = teacher_dummies
+    elif len(categorical_controls) == 1:
+        dummies = sps.hstack((teacher_dummies, make_dummies(data[categorical_controls[0]])))
     else:
-        data.rename(columns={residual: 'residual'}, inplace=True) 
+        dummies = sps.hstack((teacher_dummies,
+            sps.hstack((make_dummies(data[elt]) for elt in categorical_controls))))
 
-    data = data[data['residual'].notnull()]  # Drop students with missing scores
-    assert len(data) > 0
-        
-    ssr = np.var(data['residual'])  # Calculate sum of squared residuals
+    x = sps.hstack((dummies, dense_controls))
+    b = sps.linalg.lsqr(x, data[outcome].values)[0]
+    errors = data[outcome] - x.dot(b)
+    # x'x as vector rather than diagonal matrix
+    x_prime_x = (teacher_dummies.multiply(teacher_dummies)).T.dot(np.ones(n))
+    assert len(x_prime_x) == n_teachers
+    V = errors.dot(errors) / (x_prime_x * (n - x.shape[1]))
+    assert V.ndim == 1
+    assert len(V) == n_teachers
+    mu_preliminary = b[:n_teachers]
+    assert len(mu_preliminary) == n_teachers
+    assert len(mu_preliminary) == len(V)
+
+    objfun = lambda x: get_ll(x, mu_preliminary, V)
+    g = lambda x: get_grad(x, mu_preliminary, V)
+    h = lambda x: get_hessian(x, mu_preliminary, V)
+
+    sigma_mu_squared = minimize(objfun, 1, method='Newton-CG', jac=g, hess=h).x
+    return sigma_mu_squared
+    
+
+def moment_matching_alg(data, outcome, teacher, dense_controls, class_level_vars,
+        categorical_controls, jackknife, moments_only, method, add_constant):
+
+    n = len(data)
+
+    def demean(mat):
+        return mat - np.mean(mat, 0)
+
+    # Use within estimator if method='ks' and len(categorical_controls) = 1
+    # Use within estimator if method='cfr' and len(categorical_controls) = 0
+    # Otherwise, don't use within estimator
+
+    # If method is 'ks', just ignore teachers
+    if method == 'ks':
+        # Within estimator
+        if len(categorical_controls) == 1:
+            grouped = Groupby(data[categorical_controls[0]].values)
+            x_demeaned = grouped.apply(demean, dense_controls)
+            if x_demeaned.ndim == 1:
+                x_demeaned.shape = (n, 1)
+            beta_tmp = np.linalg.lstsq(x_demeaned, data[outcome].values)[0]
+            resid_tmp = data[outcome] - dense_controls.dot(beta_tmp)
+            residual = grouped.apply(demean, resid_tmp)
+            assert(len(residual) == len(data))
+        elif len(categorical_controls) == 0:
+            beta = np.linalg.lstsq(dense_controls, data[outcome].values)[0]
+            residual = data[outcome] - dense_controls.dot(beta)
+        else:
+            dummies = (make_dummies(data[elt]) for elt in categorical_controls)
+            controls = sps.hstack((sps.hstack(dummies), dense_controls))
+            beta = sps.linalg.lsqr(controls, data[outcome].values)
+            residual = data[outcome] - controls.dot(beta)
+    # Residualize with fixed effects
+    else:
+        if len(categorical_controls) == 0:
+            grouped = Groupby(data[teacher].values)
+            x_demeaned = grouped.apply(demean, dense_controls)
+            beta = np.linalg.lstsq(x_demeaned, data[outcome].values)
+            residual = data[outcome] - x_demeaned.dot(beta)
+        else:
+            teacher_dummies = make_dummies(data[teacher])
+            n_teachers = len(set(data[teacher]))
+
+            if categorical_controls is None:
+                other_controls = dense_controls
+                #controls = sps.hstack((teacher_dummies, dense_controls))
+            else:
+                if len(categorical_controls) == 1:
+                    non_teacher_dummies = make_dummies(data[categorical_controls[0]])
+                else:
+                    non_teacher_dummies = sps.hstack((make_dummies(data[elt]) for elt in categorical_controls))
+
+                other_controls = sps.hstack((non_teacher_dummies, dense_controls))
+
+            controls = sps.hstack((teacher_dummies, other_controls))
+            beta = sps.linalg.lsqr(controls, data[outcome].values)[0]
+            residual = data[outcome].values - other_controls.dot(beta[n_teachers:])
+
+    data['residual'] = residual
+    ssr = np.var(residual)
 
     # Collapse data to class level
     # Count number of students in class
@@ -104,34 +168,94 @@ def calculate_va(data, covariates, jackknife, residual=None, moments=None,
     assert len(class_df) > 0
     
     if jackknife: # Drop teachers teaching only one class
-        class_df = drop_one_class_teachers(class_df)
+        keeps = Groupby(class_df[teacher].values).apply(lambda x: len(x) > 1, class_df[teacher])
+        class_df = class_df.loc[keeps, :]
+        class_df.reset_index(drop=True, inplace=True)
 
     ## Second, calculate a bunch of moments
     # Calculate variance of epsilon
     var_epsilon_hat = estimate_var_epsilon(class_df)
 
-    # Estimate TVA variances and covariances
-    if 'var mu' in moments:
-        var_mu_hat = moments['var mu']
-    else:
-        var_mu_hat, var_mu_hat_ci = estimate_mu_variance(class_df, 1000)
+    var_mu_hat = estimate_mu_variance(class_df, teacher)
 
     # Estimate variance of class-level shocks
     var_theta_hat = ssr - var_mu_hat - var_epsilon_hat
     if var_theta_hat < 0:
-        if not quietly:
-            warnings.warn('Var theta hat is negative. Measured to be ' +\
-                           str(var_theta_hat))
+        warnings.warn('Var theta hat is negative. Measured to be ' +\
+                       str(var_theta_hat))
         var_theta_hat = 0
         
     if var_mu_hat <= 0 and not quietly:
         warnings.warn('Var mu hat is negative. Measured to be '+ str(var_mu_hat))
     if moments_only:
-        return var_mu_hat, var_theta_hat, var_epsilon_hat, var_mu_hat_ci
+        return var_mu_hat, var_theta_hat, var_epsilon_hat
     results = get_each_va(class_df, var_theta_hat, var_epsilon_hat
                        , var_mu_hat, jackknife)
     if column_names is not None:
         results.rename(columns={column_names[key]:key 
                                 for key in column_names}, inplace=True)
     
-    return results, var_mu_hat, var_theta_hat, var_epsilon_hat, var_mu_hat_ci
+    return results, var_mu_hat, var_theta_hat, var_epsilon_hat
+
+"""
+:param data: Pandas DataFrame
+:param outcome: string with name of outcome column
+:param teacher: string with name of teacher column
+:param covariates: List of strings with names of covariate columns
+:param class_level_vars: List of string with names of class-level columns.
+    For example, a class may be identified by a combination of a teacher
+    and time period, or classroom id and time period.
+:param categorical_controls: Controls that must be expanded into dummy variables.
+:param jackknife: Whether to use leave-out estimator
+:param method: 'ks' for method from Kane & Staiger (2008)
+               'cfr' to residualize in the presence of fixed effects, as in
+                    Chetty, Friedman, and Rockoff (2014)
+                'fk' to use an estimator derived from Fessler and Kasy (2016)
+"""
+def calculate_va(data, outcome, teacher, covariates, class_level_vars,
+                categorical_controls=None, jackknife=False, moments_only=True, 
+                method='ks', add_constant=True):
+    # Input checks
+    assert outcome in data.columns
+    assert teacher in data.columns
+    if covariates is None:
+        covariates = []
+    else:
+        assert set(covariates).issubset(set(data.columns))
+    assert set(class_level_vars).issubset(set(data.columns))
+    if categorical_controls is None:
+        categorical_controls = []
+    else:
+        assert set(categorical_controls).issubset(set(data.columns))
+
+    # Preprocessing
+    use_cols = remove_duplicates([outcome, teacher] + covariates + \
+                                  class_level_vars + categorical_controls)
+    not_null = (pd.notnull(data[x]) for x in  use_cols)
+    not_null = reduce(lambda x, y: x & y, not_null)
+    assert not_null.any()
+    print('Dropping ', sum(not_null), ' observations due to missing data')
+    data = data[not_null]
+
+    if covariates is None:
+        dense_controls = np.ones((n, 1)) if add_constant else None
+    else:
+        dense_controls = data[covariates].values
+        if add_constant:
+            dense_controls = np.hstack((np.ones((len(data), 1)), dense_controls))
+        
+    # Recode categorical variables
+    # Recode teachers as contiguous integers
+    key_to_recover_teachers, data[teacher] = np.unique(data[teacher], return_inverse=True)
+    for elt in categorical_controls:
+        _, data[elt] = np.unique(data[elt], return_inverse=True)
+
+    if method in ['ks', 'cfr']:
+        return moment_matching_alg(data, outcome, teacher, dense_controls, class_level_vars,
+                categorical_controls, jackknife, moments_only, method, add_constant)
+    elif method == 'fk':
+        return fk_alg(data, outcome, teacher, dense_controls, categorical_controls,
+                      jackknife, moments_only, add_constant)
+    else:
+        raise NotImplementedError('Only the methods ks, cfr, and fk are currently implmented.')
+
