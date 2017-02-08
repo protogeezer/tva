@@ -15,12 +15,19 @@ data['outcome'] = -7 + data['fiscal year'] * 3 + person_effects[person]
 data['constant'] = 1
 
 # Try each of three different estimators
+print('KS')
 est_ks = calculate_va(data.copy(), 'outcome', 'person', ['fiscal year'],
                       ['person', 'clean district name'], categorical_controls=['clean district name'],
-                      method='ks', add_constant=False)
+                      method='ks')[0]
+print('CFR')
 est_cfr = calculate_va(data.copy(), 'outcome', 'person', ['fiscal year'],
                       ['person', 'clean district name'], categorical_controls=['clean district name'],
-                      method='cfr', add_constant=False)
+                      method='cfr')[0]
+print('FK')
 est_fk = calculate_va(data.copy(), 'outcome', 'person', ['fiscal year'],
                       ['person', 'clean district name'], categorical_controls=['clean district name'],
-                      method='fk')
+                      method='fk')[0]
+
+print(est_ks)
+print(est_cfr)
+print(est_fk)
