@@ -6,39 +6,95 @@ Optimize over tau^2 and gamma.
 As in Fessler and Kasy (2016)
 """
 import numpy as np
-from scipy.optimize import check_grad, newton
+from scipy.optimize import check_grad#, newton
 
-def get_g_and_tau(mu_hat, g_hat, v):
-    J = v.shape[0] - len(g_hat)
-    # Precompute stuff
-    v_11 = v[:J, :J]
-    v_12 = v[:J, J:]
-    v_22 = v[J:, J:]
+# Scalar for now
+# Better than Scipy's implementation because it has a (backtracking) line search
+# And because it allows for objective function, grad, and hessian to come from same function
+# This is a *minimization* problem
+def newton(f, x):
+    max_iter = 20
+    abs_grad = 1
+    i = 0
+    while abs_grad > 10**(-6) and i < max_iter:
+        print('iter = ', i)
+        print(x)
+        
+        obj_fun_old, grad, hess = f(x, True, True)
+        step = -1 * grad / hess
+        obj_fun = f(x + step)
+        # Line search
+        n_tries = 0
+        while obj_fun > obj_fun_old and n_tries < 20:
+            step /= 2
+            obj_fun = f(x + step)
+            n_tries += 1
+#            print('Obj fun val after ', n_tries, 'steps: ', obj_fun)
+        if n_tries == 20:
+            break
+
+        x += step
+        abs_grad = abs(grad)
+        i += 1
+        
+    return x
+        
+
+def get_g_and_tau(mu_hat, g_hat, v, starting_guess=1):
+    print('Size of v ', v.shape)
     
-    schur = v_11 - v_12.dot(np.linalg.lstsq(v_22, v_12.T)[0])
-    e_values = np.linalg.eigvalsh(schur)
+    if g_hat is None:
+        e_values = np.linalg.eigvalsh(v)
+        v_ = v
 
-    def get_ll(tau_squared):
-        return np.sum(np.log(e_values + tau_squared)) + \
-                mu_hat.T.dot(np.linalg.lstsq(v_11 + np.eye(J) * tau_squared, mu_hat)[0])
+    else:
+        J = v.shape[0] - len(g_hat)
+        # Precompute stuff
+        v_11 = v[:J, :J]
+        v_12 = v[:J, J:]
+        v_22 = v[J:, J:]
+        
+        schur = v_11 - v_12.dot(np.linalg.solve(v_22, v_12.T))
+        e_values = np.linalg.eigvalsh(schur)
+        v_ = v_11
 
-    def get_grad(tau_squared):
-        tmp = np.linalg.lstsq(v_11 + np.eye(J) * tau_squared, mu_hat)[0]
-        return np.sum(1 / (e_values + tau_squared)) - tmp.dot(tmp)
+    assert not np.any(e_values < 0)
 
-    def get_hess(tau_squared):
-        tmp = v_11 +  np.eye(J) * tau_squared
-        tmp_2 = np.linalg.lstsq(tmp, mu_hat)[0]
-        return -1 * np.sum( 1/ ((e_values + tau_squared)**2)) + 2 * tmp_2.dot(np.linalg.lstsq(tmp, tmp_2)[0])
+    def get_ll_grad_hess(tau_squared, get_grad=False, get_hess=False):
+        v_plus_tau_sq = v_ + np.eye(J) * tau_squared
+        e_plus_tau_sq = e_values + tau_squared
+        assert np.all(e_plus_tau_sq > 0)
 
-#    # Derivative check
-#    print(check_grad(get_ll, get_grad, [[1]]) / np.abs(get_grad(1)))
-#    print(check_grad(get_grad, get_hess, [[1]]) / np.abs(get_hess(1)))
+        tmp = np.linalg.solve(v_plus_tau_sq, mu_hat)
 
-    tau_sq = newton(get_grad, 1, fprime = get_hess) 
-    g = g_hat - v_12.T.dot(np.linalg.lstsq(v_11 + tau_sq * np.eye(J), mu_hat)[0])
-    
-    return tau_sq, g
+        ll = np.sum(np.log(e_plus_tau_sq)) + mu_hat.T.dot(tmp)
+        if get_grad or get_hess:
+            grad = np.sum(1 / e_plus_tau_sq) - tmp.dot(tmp)
+            if get_hess:
+                hess = -1 * np.sum(1 / e_plus_tau_sq**2) \
+                      + 2 * tmp.dot(np.linalg.solve(v_plus_tau_sq, tmp))
+
+                return ll, grad, hess
+            else:
+                return ll, grad
+        else:
+            return ll
+
+    test_x = 1
+
+    # Derivative check
+#    get_grad = lambda x: get_ll_grad_hess(x, True)[1]
+#    print('Gradient check: ', check_grad(get_ll_grad_hess, get_grad, [test_x]))
+#    get_hess = lambda x: get_ll_grad_hess(x, True, True)[2]
+#    print('Hessian check: ', check_grad(get_grad, get_hess, [test_x]))
+
+    tau_sq = newton(get_ll_grad_hess, starting_guess)
+
+    if g_hat is not None:
+        g = g_hat - v_12.T.dot(np.linalg.solve(v_11 + tau_sq * np.eye(J), mu_hat))
+        return tau_sq, g
+    else:
+        return tau_sq
 
 
 # Check numerically that this works
