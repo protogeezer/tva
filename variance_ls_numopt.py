@@ -16,7 +16,8 @@ def newton(f, x):
     max_iter = 20
     abs_grad = 1
     i = 0
-    while abs_grad > 10**(-6) and i < max_iter:
+    # do at least 2 iterations, just in case gradient is scaled poorly
+    while i < 3 or (abs_grad > 10**(-6) and i < max_iter):
         print('iter = ', i)
         print(x)
         
@@ -37,7 +38,7 @@ def newton(f, x):
         abs_grad = abs(grad)
         i += 1
         
-    return x
+    return x, obj_fun
         
 
 def get_g_and_tau(mu_hat, g_hat, v, starting_guess=1):
@@ -80,15 +81,11 @@ def get_g_and_tau(mu_hat, g_hat, v, starting_guess=1):
         else:
             return ll
 
-    test_x = 1
-
-    # Derivative check
-#    get_grad = lambda x: get_ll_grad_hess(x, True)[1]
-#    print('Gradient check: ', check_grad(get_ll_grad_hess, get_grad, [test_x]))
-#    get_hess = lambda x: get_ll_grad_hess(x, True, True)[2]
-#    print('Hessian check: ', check_grad(get_grad, get_hess, [test_x]))
-
-    tau_sq = newton(get_ll_grad_hess, starting_guess)
+    tau_sq, ll = newton(get_ll_grad_hess, starting_guess)
+    # check for corner solution
+    #ll_0 = get_ll_grad_hess(0)
+    #if ll_0 < ll:
+    #    tau_sq = 0
 
     if g_hat is not None:
         g = g_hat - v_12.T.dot(np.linalg.solve(v_11 + tau_sq * np.eye(J), mu_hat))
