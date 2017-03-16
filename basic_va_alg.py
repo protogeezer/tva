@@ -1,4 +1,4 @@
-from va_functions import remove_duplicates, estimate_var_epsilon, remove_collinear_cols
+from va_functions import remove_duplicates, estimate_var_epsilon#, remove_collinear_cols
 from functools import reduce
 import pandas as pd
 import warnings
@@ -7,7 +7,7 @@ import scipy.sparse as sps
 import scipy.linalg
 import sys
 sys.path += ['/Users/lizs/hdfe/']
-from hdfe import Groupby
+from hdfe import Groupby, estimate
 from variance_ls_numopt import get_g_and_tau
 
 
@@ -15,7 +15,6 @@ from variance_ls_numopt import get_g_and_tau
 # assume symmetric and positive definite: C = B;
 # This works, yay
 def invert_block_matrix(A, B, D):
-    import ipdb; ipdb.set_trace()
     A_inv = 1 / A
     A_inv_B = (A_inv * B.T).T
 
@@ -35,7 +34,7 @@ def estimate_mu_variance(data, teacher):
             val += np.dot(vector[i:], vector[:-i])
 
         return np.array([val, len(vector) * (len(vector) - 1) /2])
-            
+
     # First column is sum of all products, by teacher; second is number of products, by teacher
     mu_estimates = Groupby(data[teacher].values)\
                     .apply(f, data['mean score'].values, width=2)
@@ -61,16 +60,6 @@ def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
     return df
 
 
-def make_dummies(elt, drop_col):
-    if np.max(elt) >= len(set(elt)):
-        _, elt = np.unique(elt, return_inverse=True)
-
-    dummies = sps.csc_matrix((np.ones(len(elt)), (range(len(elt)), elt)))
-    if drop_col:
-        return dummies[:, 1:]
-    else:
-        return dummies
-
 
 def fk_alg(data, outcome, teacher, dense_controls, 
         categorical_controls, jackknife, moments_only):
@@ -87,47 +76,9 @@ def fk_alg(data, outcome, teacher, dense_controls,
     n_teachers = max(data[teacher]) + 1
     n = len(data)
 
-    teacher_dummies = make_dummies(data[teacher], drop_col=False)
-    if categorical_controls is None:
-        # Within estimator
-        grouped = Groupby(data[teacher].values)
-        x_demeaned = grouped.apply(demean, dense_controls)
-        b = np.linalg.lstsq(x_demeaned, data[outcome].values)[0]
-        residual = data[outcome].values - dense_controls.dot(b)
-        teacher_effects = grouped.apply(np.mean, residuals)
-        b = np.concatenate((teacher_effects, b))
-        x = sps.hstack((techer_dummies, dense_controls))
-    else:
-        if len(categorical_controls) == 1:
-            non_teacher_dummies = make_dummies(data[categorical_controls[0]], True)
-        else:
-            non_teacher_dummies = sps.hstack([make_dummies(data[elt].values, True)
-                                              for elt in categorical_controls])
-        if dense_controls is None:
-            other_controls = non_teacher_dummies
-        else:
-            other_controls = sps.hstack((non_teacher_dummies, dense_controls))
-        x = sps.hstack((teacher_dummies, other_controls))
-        rank = np.linalg.matrix_rank(x.todense())
-        print('Rank of x before ', rank)
-        print('Shape of x before ', x.shape)
-        if rank < x.shape[1]:
-            warnings.warn('x is rank deficient')
-            x = remove_collinear_cols(x)
-#            assert np.linalg.matrix_rank(x.todense()) == x.shape[1]
-
-        b = sps.linalg.lsqr(x, data[outcome].values)[0]
-
-    assert np.all(np.isfinite(b))
-
-    errors = data[outcome].values - x.dot(b)
-
-    # Get variance matrix: first method
-    q, r = np.linalg.qr(x.todense())
-    # will fail if x is rank deficient
-    inv_r = scipy.linalg.solve_triangular(r, np.eye(r.shape[0]))
-    inv_x_prime_x = inv_r.dot(inv_r.T)
-    V = inv_x_prime_x * errors.dot(errors) / (n - x.shape[1])
+    cat = [teacher] if categorical_controls is None\
+            else [teacher] + categorical_controls
+    b, _, _, V = estimate(data, data[outcome].values, dense_controls, cat, estimate_variance=True)
 
     mu_preliminary = b[:n_teachers]
     mu_preliminary -= np.mean(mu_preliminary)
@@ -135,7 +86,8 @@ def fk_alg(data, outcome, teacher, dense_controls,
     g_hat = b[n_teachers:]
     assert len(mu_preliminary) == n_teachers
 
-    sigma_mu_squared, gamma = get_g_and_tau(mu_preliminary, g_hat, V, starting_guess = .01 * np.var(data[outcome]))
+    sigma_mu_squared, gamma = get_g_and_tau(mu_preliminary, g_hat, V, 
+                                            starting_guess = 0)
     return sigma_mu_squared, gamma
     
 
@@ -147,74 +99,20 @@ def moment_matching_alg(data, outcome, teacher, dense_controls, class_level_vars
     def demean(mat):
         return mat - np.mean(mat, 0)
 
-    # Use within estimator if method='ks' and len(categorical_controls) = 1
-    # Use within estimator if method='cfr' and len(categorical_controls) = 0
-    # Otherwise, don't use within estimator
-
-    # If method is 'ks', just ignore teachers when residualizing
+        # If method is 'ks', just ignore teachers when residualizing
     if method == 'ks':
-        # Within estimator
-        if categorical_controls is None:
-            if add_constant:
-                if dense_controls is None:
-                    dense_controls = np.ones((n, 1))
-                else:
-                    dense_controls = np.hstack((np.ones((n, 1)), dense_controls))
-
-            beta = np.linalg.lstsq(dense_controls, data[outcome].values)[0]
-            assert np.all(np.isfinite(beta))
-            residual = data[outcome] - dense_controls.dot(beta)
-
-        elif len(categorical_controls) == 1:
-            grouped = Groupby(data[categorical_controls[0]].values)
-            if dense_controls is None:
-                residual = grouped.apply(demean, data[outcome].values)
-            else:
-                x_demeaned = grouped.apply(demean, dense_controls)
-                if x_demeaned.ndim == 1:
-                    x_demeaned.shape = np.expand_dims(x_demeaned)
-                beta_tmp = np.linalg.lstsq(x_demeaned, data[outcome].values)[0]
-                assert np.all(np.isfinite(beta_tmp))
-                resid_tmp = data[outcome].values - dense_controls.dot(beta_tmp)
-                assert np.all(np.isfinite(resid_tmp))
-                residual = grouped.apply(demean, resid_tmp)
-        else:
-            dummies = [make_dummies(data[elt], drop_col=True) for elt in categorical_controls]
-            if dense_controls is None:
-                controls = sps.hstack((np.ones((n, 1)), sps.hstack(dummies)))
-            else:
-                controls = sps.hstack((np.ones((n, 1)), sps.hstack(dummies), dense_controls))
-            # Or is this supposed to have [0] at the end?
-            beta = sps.linalg.lsqr(controls, data[outcome].values)[0]
-            assert np.all(np.isfinite(beta))
-            residual = data[outcome] - controls.dot(beta)
+        beta, x, residual = estimate(data, data[outcome].values, dense_controls, 
+                                  categorical_controls, get_residual=True)
     # Residualize with fixed effects
     else:
-        if categorical_controls is None:
-            grouped = Groupby(data[teacher].values)
-            x_demeaned = grouped.apply(demean, dense_controls)
-            beta = np.linalg.lstsq(x_demeaned, data[outcome].values)[0]
-            residual = data[outcome].values - dense_controls.dot(beta)
-            residual -= np.mean(residual)
-            
-        else:
-            teacher_dummies = make_dummies(data[teacher], drop_col=False)
-            n_teachers = len(set(data[teacher]))
-
-            if len(categorical_controls) == 1:
-                non_teacher_dummies = make_dummies(data[categorical_controls[0]], drop_col=True)
-            else:
-                non_teacher_dummies = sps.hstack([make_dummies(data[elt], True) 
-                                                  for elt in categorical_controls])
-
-            if dense_controls is None:
-                other_controls = non_teacher_dummies
-            else:
-                other_controls = sps.hstack((non_teacher_dummies, dense_controls))
-            controls = sps.hstack((teacher_dummies, other_controls))
-            beta = sps.linalg.lsqr(controls, data[outcome].values)[0]
-            residual = data[outcome].values - other_controls.dot(beta[n_teachers:])
-
+        n_teachers = len(set(data[teacher]))
+        cat = [teacher] if categorical_controls is None\
+                else [teacher] + categorical_controls
+        beta, x = estimate(data, data[outcome].values, dense_controls, cat)
+        # add teacher fixed effects back in
+        residual = data[outcome].values - x.A[:, n_teachers:].dot(beta[n_teachers:])
+        residual -= np.mean(residual)
+        
     assert np.all(np.isfinite(residual))
     assert len(residual) == len(data)
     data['residual'] = residual
@@ -234,15 +132,13 @@ def moment_matching_alg(data, outcome, teacher, dense_controls, class_level_vars
     assert len(class_df) > 0
     
     if jackknife: # Drop teachers teaching only one class
-        keeps = Groupby(class_df[teacher].values).apply(lambda x: len(x) > 1, class_df[teacher])
-        class_df = class_df.loc[keeps, :]
-        class_df.reset_index(drop=True, inplace=True)
+        keeps = Groupby(class_df[teacher]).apply(lambda x: len(x) > 1, class_df[teacher]).astype(bool)
+        class_df = class_df.loc[keeps, :].reset_index(drop=True)
 
-    ## Second, calculate a bunch of moments
-    # Calculate variance of epsilon
+    # Second, calculate a bunch of moments
     var_epsilon_hat = estimate_var_epsilon(class_df)
-
     var_mu_hat = estimate_mu_variance(class_df, teacher)
+
 
     # Estimate variance of class-level shocks
     var_theta_hat = ssr - var_mu_hat - var_epsilon_hat
@@ -257,9 +153,10 @@ def moment_matching_alg(data, outcome, teacher, dense_controls, class_level_vars
         return var_mu_hat, var_theta_hat, var_epsilon_hat
 
     results = get_each_va(class_df, var_theta_hat, var_epsilon_hat
-                       , var_mu_hat, jackknife)
+                        , var_mu_hat, jackknife)
 
     return results, var_mu_hat, var_theta_hat, var_epsilon_hat
+
 
 def calculate_va(data, outcome, teacher, covariates, class_level_vars,
                 categorical_controls=None, jackknife=False, moments_only=True, 
@@ -304,21 +201,24 @@ def calculate_va(data, outcome, teacher, covariates, class_level_vars,
     if categorical_controls is not None:
         use_cols += categorical_controls
         assert set(categorical_controls).issubset(set(data.columns))
-        for elt in categorical_controls:
-            _, data[elt] = np.unique(data[elt], return_inverse=True)
-        # make sure each category is coded as dense
+            
 
     not_null = (pd.notnull(data[x]) for x in remove_duplicates(use_cols))
     not_null = reduce(lambda x, y: x & y, not_null)
     assert not_null.any()
-    print('Dropping ', len(not_null) - sum(not_null), ' observations due to missing data')
-    data = data[not_null]
-    data = data[remove_duplicates(use_cols)]
+    if not not_null.all():
+        print('Dropping ', len(not_null) - sum(not_null), ' observations due to missing data')
+        data = data[not_null]
+        data = data[remove_duplicates(use_cols)]
 
-    for col in ['person'] + categorical_controls:
+    # Recode categorical variables using consecutive integers
+    to_recode = [teacher] if categorical_controls is None \
+                else [teacher] + categorical_controls
+    for col in to_recode:
         if len(set(data[col])) <= max(data[col]):
             _, data[col] = np.unique(data[col], return_inverse=True)
 
+        
     dense_controls = None if covariates is None else data[covariates].values
 
     # Recode categorical variables
