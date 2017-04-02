@@ -6,7 +6,9 @@ import numpy as np
 import scipy.sparse as sps
 import scipy.linalg
 import sys
-sys.path += ['/Users/lizs/hdfe/']
+#sys.path += ['/n/home09/esantorella/Bureaucrat-Value-Added/']
+#from groupby import Groupby
+sys.path += ['/n/home09/esantorella/hdfe/']
 from hdfe import Groupby
 from variance_ls_numopt import get_g_and_tau
 
@@ -172,7 +174,7 @@ def moment_matching_alg(data, outcome, teacher, dense_controls, class_level_vars
             else:
                 x_demeaned = grouped.apply(demean, dense_controls)
                 if x_demeaned.ndim == 1:
-                    x_demeaned.shape = np.expand_dims(x_demeaned)
+                    x_demeaned = np.expand_dims(x_demeaned, 1)
                 beta_tmp = np.linalg.lstsq(x_demeaned, data[outcome].values)[0]
                 assert np.all(np.isfinite(beta_tmp))
                 resid_tmp = data[outcome].values - dense_controls.dot(beta_tmp)
