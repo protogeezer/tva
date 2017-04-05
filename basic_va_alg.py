@@ -1,4 +1,4 @@
-from va_functions import remove_duplicates, estimate_var_epsilon#, remove_collinear_cols
+from va_functions import *#, remove_collinear_cols
 from functools import reduce
 import pandas as pd
 import warnings
@@ -41,24 +41,27 @@ def estimate_mu_variance(data, teacher):
     return np.sum(mu_estimates[:, 0]) / np.sum(mu_estimates[:, 1])
 
 
-def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
+def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife, teacher):
+    grouped = Groupby(df[teacher].values)
     # Get unshrunk VA
     f = lambda data: get_unshrunk_va(data, var_theta_hat, var_epsilon_hat 
                                    , jackknife)
-    df['unshrunk va']  = df.groupby('teacher')[['size', 'mean score']]\
-                           .apply(f).values
+
+    tmp = grouped.apply(f, df[['size', 'mean score']].values, broadcast=True, width=1)
+    df['unshrunk va'] = tmp 
+    #df['unshrunk va']  = df.groupby(teacher)[['size', 'mean score']]\
+    #                       .apply(f).values
     if var_mu_hat > 0:
         f = lambda data: get_va(data, var_theta_hat, var_epsilon_hat, var_mu_hat
                               , jackknife)
-        results = df.groupby('teacher')[['size', 'mean score']].apply(f).values
+        results = df.groupby(teacher)[['size', 'mean score']].apply(f).values
 
         if not jackknife: # collapse to teacher leel
-            df = df.groupby('teacher').size().reset_index()
+            df = df.groupby(teacher).size().reset_index()
 
         df['va'], df['variance'] = zip(*results)
 
     return df
-
 
 
 def fk_alg(data, outcome, teacher, dense_controls, 
@@ -70,25 +73,73 @@ def fk_alg(data, outcome, teacher, dense_controls,
     different value-added paper.
     TODO: Teacher-level controls
     """
-    if not moments_only:
-        raise NotImplementedError('Please set moments_only to True')
-
     n_teachers = max(data[teacher]) + 1
     n = len(data)
 
     cat = [teacher] if categorical_controls is None\
             else [teacher] + categorical_controls
-    b, _, _, V = estimate(data, data[outcome].values, dense_controls, cat, estimate_variance=True)
+    b, _, _, V = estimate(data, data[outcome].values, dense_controls, cat, 
+                          estimate_variance=True, check_rank=True)
 
     mu_preliminary = b[:n_teachers]
     mu_preliminary -= np.mean(mu_preliminary)
 
-    g_hat = b[n_teachers:]
+    b_hat = b[n_teachers:]
     assert len(mu_preliminary) == n_teachers
 
-    sigma_mu_squared, gamma = get_g_and_tau(mu_preliminary, g_hat, V, 
+    sigma_mu_squared, beta = get_g_and_tau(mu_preliminary, b_hat, V, 
                                             starting_guess = 0)
-    return sigma_mu_squared, gamma
+    if moments_only:
+        return sigma_mu_squared, beta
+    # this may have already been computed in 'estimate'; fix if time-consuming
+    inv_V = np.linalg.inv(V)
+    m = np.mean(mu_preliminary)
+
+    epsilon = np.linalg.lstsq(inv_V[:n_teachers, :n_teachers], V[:n_teachers, n_teachers:])[0].dot(b_hat - beta)
+    tmp_1 = inv_V[:n_teachers, :n_teachers] + np.eye(n_teachers) / sigma_mu_squared
+    tmp_2 = inv_V[:n_teachers, :n_teachers] * (mu_preliminary - epsilon) + m / sigma_mu_squared
+    ans = np.linalg.lstsq(tmp_1, tmp_2)[0]
+
+    alternate = m + np.linalg.lstsq(np.eye(n_teachers) + inv_V[:n_teachers, :n_teachers], mu_preliminary - m)
+    return alternate, sigma_mu_squared
+
+
+# TODO: this is the old version
+def mle(data, outcome, teacher, dense_controls, categorical_controls, jackknife,
+        moments_only):
+    def demean(mat):
+        return mat - np.mean(mat, 0)
+    def mean(mat):
+        return np.mean(mat, 0)
+
+    grouped = Groupby(data[teacher])
+    # since using within estimator, just make everything dense
+    if categorical_controls is None:
+        x = dense_controls
+    else:
+        x = np.hstack((dense_controls, 
+                sps.hstack((make_dummies(data[elt]) for elt in categorical_controls)).A))
+    x_means = grouped.apply(mean, x, width = x.shape[1], broadcast=False)
+    y_means = grouped.apply(mean, data[outcome].values, broadcast=False)
+    beta_plus_lambda = np.linalg.lstsq(x_means, y_means)[0]
+    errors_2 = y_means - x_means.dot(beta_plus_lambda)
+    ssr_2 = errors_2.dot(errors_2)
+    x_demeaned = grouped.apply(demean, x, broadcast=True)
+    y_demeaned = grouped.apply(demean, data[outcome].values, broadcast=True)
+    beta = np.linalg.lstsq(x_demeaned, y_demeaned)[0]
+    errors_1 = y_demeaned - x_demeaned.dot(beta)
+    ssr_1 = errors_1.dot(errors_1)
+    n_teachers = len(set(data[teacher]))
+    assert n_teachers == len(y_means)
+    # sigma_mu_^2 + sigma_e^2/K
+    tmp = ssr_2 / n_teachers
+    sigma_epsilon_sq = ssr_1 / (len(data) - n_teachers)
+    # assume number of students per class is constant
+    sigma_mu_sq = tmp - sigma_epsilon_sq / (len(data) / n_teachers)
+    # mu ~ N(x_means * lambda, sigma_mu_sq)
+    lambda_ = beta_plus_lambda - beta
+    total_variance = np.var(x_means.dot(lambda_)) + sigma_mu_sq
+    return total_variance, sigma_epsilon_sq
     
 
 def moment_matching_alg(data, outcome, teacher, dense_controls, class_level_vars,
@@ -99,16 +150,18 @@ def moment_matching_alg(data, outcome, teacher, dense_controls, class_level_vars
     def demean(mat):
         return mat - np.mean(mat, 0)
 
-        # If method is 'ks', just ignore teachers when residualizing
+    # If method is 'ks', just ignore teachers when residualizing
     if method == 'ks':
         beta, x, residual = estimate(data, data[outcome].values, dense_controls, 
-                                  categorical_controls, get_residual=True)
+                                  categorical_controls, get_residual=True,
+                                  check_rank=True)
     # Residualize with fixed effects
     else:
         n_teachers = len(set(data[teacher]))
         cat = [teacher] if categorical_controls is None\
                 else [teacher] + categorical_controls
-        beta, x = estimate(data, data[outcome].values, dense_controls, cat)
+        beta, x = estimate(data, data[outcome].values, dense_controls, cat,
+                           check_rank=True)
         # add teacher fixed effects back in
         residual = data[outcome].values - x.A[:, n_teachers:].dot(beta[n_teachers:])
         residual -= np.mean(residual)
@@ -153,7 +206,7 @@ def moment_matching_alg(data, outcome, teacher, dense_controls, class_level_vars
         return var_mu_hat, var_theta_hat, var_epsilon_hat
 
     results = get_each_va(class_df, var_theta_hat, var_epsilon_hat
-                        , var_mu_hat, jackknife)
+                        , var_mu_hat, jackknife, teacher)
 
     return results, var_mu_hat, var_theta_hat, var_epsilon_hat
 
@@ -220,6 +273,9 @@ def calculate_va(data, outcome, teacher, covariates, class_level_vars,
 
         
     dense_controls = None if covariates is None else data[covariates].values
+    if add_constant:
+        assert method == 'ks'
+        dense_controls = np.hstack((dense_controls, np.ones((len(data), 1))))
 
     # Recode categorical variables
     # Recode teachers as contiguous integers
@@ -232,6 +288,9 @@ def calculate_va(data, outcome, teacher, covariates, class_level_vars,
     elif method == 'fk':
         return fk_alg(data, outcome, teacher, dense_controls, categorical_controls,
                       jackknife, moments_only)
+    elif method == 'mle':
+        return mle(data, outcome, teacher, dense_controls, categorical_controls,
+                   jackknife, moments_only)
     else:
         raise NotImplementedError('Only the methods ks, cfr, and fk are currently implmented.')
 

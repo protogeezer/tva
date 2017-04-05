@@ -185,14 +185,15 @@ def check_calibration(errors, precisions):
     assert mean_standardized_error < 1 + 2 * standardized_error_se 
 
 
-def get_unshrunk_va(df, var_theta_hat, var_epsilon_hat, jackknife):
-    array = df.values
+# df should actually be an array
+def get_unshrunk_va(array, var_theta_hat, var_epsilon_hat, jackknife):
     if jackknife:
         unshrunk = np.array(np.sum(array[:, 1]) - array[:, 1]) / (len(array)-1)
     else:
         unshrunk = np.mean(array[:, 1])
 
-    return pd.DataFrame(data=unshrunk)
+    return unshrunk
+
 
 def get_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
     assert(var_mu_hat > 0)
