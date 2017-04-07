@@ -275,7 +275,10 @@ def calculate_va(data, outcome, teacher, covariates, class_level_vars,
     dense_controls = None if covariates is None else data[covariates].values
     if add_constant:
         assert method == 'ks'
-        dense_controls = np.hstack((dense_controls, np.ones((len(data), 1))))
+        if dense_controls is None:
+            dense_controls = np.ones((len(data), 1))
+        else:
+            dense_controls = np.hstack((dense_controls, np.ones((len(data), 1))))
 
     # Recode categorical variables
     # Recode teachers as contiguous integers
