@@ -65,7 +65,8 @@ def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife, teach
 
 
 def fk_alg(data, outcome, teacher, dense_controls, 
-        categorical_controls, jackknife, moments_only):
+           class_level_vars,
+        categorical_controls, jackknife, moments_only, teacher_controls):
     """
     This file implements a value-added estimator inspired by
     Fessler and Kasy 2016, "How to Use Economic Theory to Improve Estimators." Documentation available via pdf.
@@ -75,19 +76,22 @@ def fk_alg(data, outcome, teacher, dense_controls,
     """
     n_teachers = max(data[teacher]) + 1
     n = len(data)
+    ones = np.ones((n_teachers, 1))
+    if teacher_controls is not None:
+        teacher_controls = np.hstack((ones, data[teacher_controls].values))
+    else:
+        teacher_controls = ones
 
     cat = [teacher] if categorical_controls is None\
             else [teacher] + categorical_controls
     b, _, _, V = estimate(data, data[outcome].values, dense_controls, cat, 
-                          estimate_variance=True, check_rank=True)
+                          estimate_variance=True, check_rank=True, cluster=class_level_vars)
 
     mu_preliminary = b[:n_teachers]
-    mu_preliminary -= np.mean(mu_preliminary)
-
+    #mu_preliminary -= np.mean(mu_preliminary)
     b_hat = b[n_teachers:]
-    assert len(mu_preliminary) == n_teachers
 
-    sigma_mu_squared, beta = get_g_and_tau(mu_preliminary, b_hat, V, 
+    sigma_mu_squared, beta = get_g_and_tau(mu_preliminary, b_hat, V, teacher_controls,
                                             starting_guess = 0)
     if moments_only:
         return sigma_mu_squared, beta
@@ -213,7 +217,7 @@ def moment_matching_alg(data, outcome, teacher, dense_controls, class_level_vars
 
 def calculate_va(data, outcome, teacher, covariates, class_level_vars,
                 categorical_controls=None, jackknife=False, moments_only=True, 
-                method='ks', add_constant=False):
+                method='ks', add_constant=False, teacher_controls=None):
     """
     :param data: Pandas DataFrame
     :param outcome: string with name of outcome column
@@ -238,11 +242,7 @@ def calculate_va(data, outcome, teacher, covariates, class_level_vars,
     assert teacher in data.columns
     if covariates is not None:
         assert set(covariates).issubset(set(data.columns))
-    if class_level_vars is None:
-        if method != 'fk':
-            raise TypeError('class_level_vars must not be none with method ', method)
-    else:
-        assert set(class_level_vars).issubset(set(data.columns))
+    assert set(class_level_vars).issubset(set(data.columns))
 
     # Preprocessing
     use_cols = [outcome, teacher]
@@ -286,8 +286,9 @@ def calculate_va(data, outcome, teacher, covariates, class_level_vars,
         return moment_matching_alg(data, outcome, teacher, dense_controls, class_level_vars,
                 categorical_controls, jackknife, moments_only, method, add_constant)
     elif method == 'fk':
-        return fk_alg(data, outcome, teacher, dense_controls, categorical_controls,
-                      jackknife, moments_only)
+        return fk_alg(data, outcome, teacher, dense_controls,
+                      class_level_vars, categorical_controls,
+                      jackknife, moments_only, teacher_controls)
     elif method == 'mle':
         return mle(data, outcome, teacher, dense_controls, categorical_controls,
                    jackknife, moments_only)
