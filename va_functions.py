@@ -3,8 +3,9 @@ import numpy.linalg as linalg
 import pandas as pd
 import scipy.sparse as sps
 from functools import reduce
+sys.path += ['/n/home09/esantorella/hdfe']
+from hdfe import Groupby
 
-# Error here? These all moved to the hdfe package.
 
 toString = lambda *x: '\n'.join((str(elt) for elt in x))
 # For printing stuff
@@ -83,38 +84,6 @@ def make_table(regs, controls, categorical_controls):
     tab.iloc[1:-2:2, 0] = ''
 
     return tab.drop('level_1', axis=1)
-
-
-# create lags
-def make_lags(df, n_lags_back, n_lags_forward, outcomes, groupby, fill_zeros=True):
-    lags = list(range(-1 * n_lags_forward, 0)) + list(range(1, n_lags_back+1))
-    # First sort
-    grouped = Groupby(df[groupby].values)
-
-    def shift(v, lag):
-        x = np.roll(v, lag)
-        x[lag:] = float('nan')
-        return x
-
-    for out in outcomes:
-        for lag in lags:
-            # TODO: see if using .loc would be more memory efficient
-            df[out + '_lag_' + str(lag)] = grouped.apply(lambda x: shift(x, lag)
-                                                       , df[out].astype('float')\
-                                                                .values)
-
-    lag_vars = {out: [out + '_lag_' + str(lag) for lag in lags]
-                for out in outcomes}
-
-    if fill_zeros:
-        for out in outcomes:
-            for lag_var in lag_vars[out]:
-                missing = pd.isnull(df[lag_var])
-                df[lag_var + '_mi'] = missing.astype(int)
-                df.loc[missing, lag_var] = 0
-                lag_vars[out] = lag_vars[out] + [out + '_lag_' + str(lag) + '_mi']    
-
-    return df, lag_vars
 
 
 def estimate_var_epsilon(data):
