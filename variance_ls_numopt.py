@@ -6,7 +6,7 @@ Optimize over tau^2 and gamma.
 As in Fessler and Kasy (2016)
 """
 import numpy as np
-from scipy.optimize import check_grad#, newton
+from scipy.optimize import check_grad, minimize_scalar
 
 # Scalar for now
 # Better than Scipy's implementation because it has a (backtracking) line search
@@ -39,84 +39,78 @@ def newton(f, x):
         i += 1
         
     return x, obj_fun
-        
 
-def get_g_and_tau(mu_hat, g_hat, v, starting_guess=1):
-    print('Size of v ', v.shape)
+
+# concentrating out beta and gamma, ll only as a function of sigma_sq
+def get_ll(mu_p, beta_p, v, teacher_controls, diag_mat, sigma_sq):
+    Sigma = v + diag_mat * sigma_sq
+    b = np.concatenate((mu_p, beta_p))
+    n_teachers, k = teacher_controls.shape
+
+    R = np.vstack((
+            np.hstack((teacher_controls, np.zeros((n_teachers, len(beta_p))))),
+            np.hstack((np.zeros((len(beta_p), k)), np.eye(len(beta_p))))
+            ))
     
-    if g_hat is None:
-        e_values = np.linalg.eigvalsh(v)
-        v_ = v
+    Sigma_inv = np.linalg.inv(Sigma)
+    P_R = R.dot(np.linalg.lstsq(R.T.dot(Sigma_inv).dot(R), R.T.dot(Sigma_inv))[0])
+    assert P_R.shape[0] == P_R.shape[1]
+    assert P_R.shape[0] == len(b)
+    tmp = (np.eye(len(b)) - P_R).dot(b)
+    ll = np.log(np.linalg.det(Sigma)) + tmp.dot(Sigma_inv.dot(tmp.T))
+    return ll, Sigma_inv, b, R
 
-    else:
-        J = v.shape[0] - len(g_hat)
-        # Precompute stuff
-        v_11 = v[:J, :J]
-        v_12 = v[:J, J:]
-        v_22 = v[J:, J:]
-        
-        schur = v_11 - v_12.dot(np.linalg.solve(v_22, v_12.T))
-        e_values = np.linalg.eigvalsh(schur)
-        v_ = v_11
 
-    assert not np.any(e_values < 0)
+def get_g_and_tau(mu_p, beta_p, v, teacher_controls, starting_guess=1):
+    print('Size of v ', v.shape)
+    m, b = len(mu_p), len(beta_p)
+    diag_mat = np.vstack((
+                    np.hstack((np.eye(m), np.zeros((m, b)))),
+                    np.hstack((np.zeros((b, m)), np.zeros((b, b))))
+                    ))
 
-    def get_ll_grad_hess(tau_squared, get_grad=False, get_hess=False):
-        v_plus_tau_sq = v_ + np.eye(J) * tau_squared
-        e_plus_tau_sq = e_values + tau_squared
-        assert np.all(e_plus_tau_sq > 0)
+    def f(sigma_sq):
+        return get_ll(mu_p, beta_p, v, teacher_controls, diag_mat, sigma_sq)[0]
+    import ipdb; ipdb.set_trace()
 
-        tmp = np.linalg.solve(v_plus_tau_sq, mu_hat)
+    sigma_mu_squared = minimize_scalar(f, bounds = [0, np.inf])['x']
+    _, Sigma_inv, b, R = get_ll(mu_p, beta_p, v, teacher_controls, diag_mat, sigma_mu_squared)
 
-        ll = np.sum(np.log(e_plus_tau_sq)) + mu_hat.T.dot(tmp)
-        if get_grad or get_hess:
-            grad = np.sum(1 / e_plus_tau_sq) - tmp.dot(tmp)
-            if get_hess:
-                hess = -1 * np.sum(1 / e_plus_tau_sq**2) \
-                      + 2 * tmp.dot(np.linalg.solve(v_plus_tau_sq, tmp))
+    # recover other parameters
+    b_hat = np.linalg.lstsq(R.T.dot(Sigma_inv.dot(R)), R.T.dot(Sigma_inv.dot(b)))[0]
 
-                return ll, grad, hess
-            else:
-                return ll, grad
-        else:
-            return ll
-
-    tau_sq, ll = newton(get_ll_grad_hess, starting_guess)
-    # check for corner solution
-    #ll_0 = get_ll_grad_hess(0)
-    #if ll_0 < ll:
-    #    tau_sq = 0
-
-    if g_hat is not None:
-        g = g_hat - v_12.T.dot(np.linalg.solve(v_11 + tau_sq * np.eye(J), mu_hat))
-        return tau_sq, g
-    else:
-        return tau_sq
-
+    return sigma_mu_squared, b_hat
 
 # Check numerically that this works
 # Cool it works
 if __name__ == '__main__':
     # Generate Monte Carlo data
+    # First, hyperparameters
+    np.random.seed(4717)
+    n_teacher_covariates = 5
+    n_teachers = 100
+    n_covariates = 4
+
     sigma_squared = 2
-    gamma = np.array([1, 2, 3])
-    gamma.shape = (3, 1)
-    k = len(gamma)
-    J = 100
-    x = np.random.normal(0, .01, (10,  J + k))
-    V = np.eye(J + k) * np.exp(np.random.normal(0, 1, J+k))\
-            + x.T.dot(x)
+    beta = np.random.normal(0, 1, n_covariates)
+    z = np.random.normal(0, 1, (n_teachers, n_teacher_covariates))
+    gamma = np.random.normal(0, 1, n_teacher_covariates)
+    tmp = np.random.normal(0, 1, (n_teachers + n_covariates, 2 * (n_teachers + n_covariates)))
+    V = tmp.dot(tmp.T)
+    mu = np.random.normal(z.dot(gamma), sigma_squared)
+    b_hat = np.random.multivariate_normal(np.concatenate((mu, beta)), V)
+    ans = get_g_and_tau(b_hat[:n_teachers], b_hat[n_teachers:], V, z)
 
-    sigma_squared_answer = []
-    gamma_answer = []
-    for i in range(100):
-        gamma_hat = gamma
-        mu = np.random.normal(0, sigma_squared**.5, (J, 1))
-        prelim = np.random.multivariate_normal(np.vstack((mu, gamma))[:,0], V)
-        sigma_squared_hat, gamma_est = get_g_and_tau(prelim[:J], prelim[J:], V)
-        sigma_squared_answer.append(sigma_squared_hat)
-        gamma_answer.append(gamma_est)
+    #sigma_squared_answer = []
+    #gamma_answer = []
+    #for i in range(100):
+    #    gamma_hat = gamma
+    #    mu = np.random.normal(0, sigma_squared**.5, (J, 1))
+    #    prelim = np.random.multivariate_normal(np.vstack((mu, gamma))[:,0], V)
+    #    sigma_squared_hat, gamma_est = get_g_and_tau(prelim[:J], prelim[J:], V)
+    #    sigma_squared_answer.append(sigma_squared_hat)
+    #    gamma_answer.append(gamma_est)
 
-    print(np.mean(sigma_squared_answer))
-    print(np.var(sigma_squared_answer))
-    print(np.mean(np.array(gamma_answer), 0))
+    #print(np.mean(sigma_squared_answer))
+    #print(np.var(sigma_squared_answer))
+    #print(np.mean(np.array(gamma_answer), 0))
