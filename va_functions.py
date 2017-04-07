@@ -3,6 +3,7 @@ import numpy.linalg as linalg
 import pandas as pd
 import scipy.sparse as sps
 from functools import reduce
+import sys
 sys.path += ['/n/home09/esantorella/hdfe']
 from hdfe import Groupby
 
