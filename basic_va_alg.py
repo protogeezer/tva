@@ -48,10 +48,7 @@ def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife, teach
     f = lambda data: get_unshrunk_va(data, var_theta_hat, var_epsilon_hat 
                                    , jackknife)
 
-    tmp = grouped.apply(f, df[['size', 'mean score']].values, broadcast=True, width=1)
-    df['unshrunk va'] = tmp 
-    #df['unshrunk va']  = df.groupby(teacher)[['size', 'mean score']]\
-    #                       .apply(f).values
+    df['unshrunk va'] = grouped.apply(f, df[['size', 'mean score']].values, broadcast=True, width=1)
     if var_mu_hat > 0:
         f = lambda data: get_va(data, var_theta_hat, var_epsilon_hat, var_mu_hat
                               , jackknife)
@@ -91,21 +88,18 @@ def fk_alg(data, outcome, teacher, dense_controls, class_level_vars,
     #mu_preliminary -= np.mean(mu_preliminary)
     b_hat = b[n_teachers:]
 
-    sigma_mu_squared, beta = get_g_and_tau(mu_preliminary, b_hat, V, teacher_controls,
+    sigma_mu_squared, beta, gamma = get_g_and_tau(mu_preliminary, b_hat, V, teacher_controls,
                                             starting_guess = 0)
     if moments_only:
-        return sigma_mu_squared, beta
-    # this may have already been computed in 'estimate'; fix if time-consuming
+        return sigma_mu_squared, beta, gamma
+    ## TODO: this may have already been computed in 'estimate'; fix if time-consuming
     inv_V = np.linalg.inv(V)
-    m = np.mean(mu_preliminary)
 
-    epsilon = np.linalg.lstsq(inv_V[:n_teachers, :n_teachers], V[:n_teachers, n_teachers:])[0].dot(b_hat - beta)
+    epsilon = -1 * np.linalg.lstsq(inv_V[:n_teachers, :n_teachers], V[:n_teachers, n_teachers:])[0].dot(b_hat - beta)
     tmp_1 = inv_V[:n_teachers, :n_teachers] + np.eye(n_teachers) / sigma_mu_squared
-    tmp_2 = inv_V[:n_teachers, :n_teachers] * (mu_preliminary - epsilon) + m / sigma_mu_squared
+    tmp_2 = inv_V[:n_teachers, :n_teachers].dot(mu_preliminary - epsilon) + teacher_controls.dot(gamma) / sigma_mu_squared
     ans = np.linalg.lstsq(tmp_1, tmp_2)[0]
-
-    alternate = m + np.linalg.lstsq(np.eye(n_teachers) + inv_V[:n_teachers, :n_teachers], mu_preliminary - m)
-    return alternate, sigma_mu_squared
+    return ans, sigma_mu_squared
 
 
 # TODO: this is the old version
