@@ -71,15 +71,15 @@ def get_g_and_tau(mu_p, beta_p, v, teacher_controls, starting_guess=1):
 
     def f(sigma_sq):
         return get_ll(mu_p, beta_p, v, teacher_controls, diag_mat, sigma_sq)[0]
-    import ipdb; ipdb.set_trace()
 
     sigma_mu_squared = minimize_scalar(f, bounds = [0, np.inf])['x']
     _, Sigma_inv, b, R = get_ll(mu_p, beta_p, v, teacher_controls, diag_mat, sigma_mu_squared)
 
     # recover other parameters
+
     b_hat = np.linalg.lstsq(R.T.dot(Sigma_inv.dot(R)), R.T.dot(Sigma_inv.dot(b)))[0]
 
-    return sigma_mu_squared, b_hat
+    return sigma_mu_squared, b_hat[:-1*len(beta_p)], b_hat[-1*len(beta_p):]
 
 # Check numerically that this works
 # Cool it works

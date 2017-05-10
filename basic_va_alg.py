@@ -6,7 +6,8 @@ import numpy as np
 import scipy.sparse as sps
 import scipy.linalg
 import sys
-sys.path += ['/n/home09/esantorella/hdfe/']
+from config import *
+sys.path += hdfe_dir
 from hdfe import Groupby, estimate
 from variance_ls_numopt import get_g_and_tau
 
