@@ -57,12 +57,13 @@ def get_ll(mu_p, beta_p, v, teacher_controls, diag_mat, sigma_sq):
     assert P_R.shape[0] == P_R.shape[1]
     assert P_R.shape[0] == len(b)
     tmp = (np.eye(len(b)) - P_R).dot(b)
-    ll = np.log(np.linalg.det(Sigma)) + tmp.dot(Sigma_inv.dot(tmp.T))
+#    ll = np.log(np.linalg.det(Sigma)) + tmp.dot(Sigma_inv.dot(tmp.T))
+    ll = np.linalg.slogdet(Sigma)[1] + tmp.dot(Sigma_inv.dot(tmp.T))
+    print(ll)
     return ll, Sigma_inv, b, R
 
 
 def get_g_and_tau(mu_p, beta_p, v, teacher_controls, starting_guess=1):
-    print('Size of v ', v.shape)
     m, b = len(mu_p), len(beta_p)
     diag_mat = np.vstack((
                     np.hstack((np.eye(m), np.zeros((m, b)))),
@@ -71,7 +72,6 @@ def get_g_and_tau(mu_p, beta_p, v, teacher_controls, starting_guess=1):
 
     def f(sigma_sq):
         return get_ll(mu_p, beta_p, v, teacher_controls, diag_mat, sigma_sq)[0]
-    import ipdb; ipdb.set_trace()
 
     sigma_mu_squared = minimize_scalar(f, bounds = [0, np.inf])['x']
     _, Sigma_inv, b, R = get_ll(mu_p, beta_p, v, teacher_controls, diag_mat, sigma_mu_squared)

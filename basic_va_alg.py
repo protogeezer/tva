@@ -6,7 +6,8 @@ import numpy as np
 import scipy.sparse as sps
 import scipy.linalg
 import sys
-sys.path += ['/n/home09/esantorella/hdfe/']
+from config import *
+sys.path += [hdfe_dir]
 from hdfe import Groupby, estimate
 from variance_ls_numopt import get_g_and_tau
 
@@ -64,8 +65,7 @@ def get_each_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife, teach
     return df
 
 
-def fk_alg(data, outcome, teacher, dense_controls, 
-           class_level_vars,
+def fk_alg(data, outcome, teacher, dense_controls, class_level_vars,
         categorical_controls, jackknife, moments_only, teacher_controls):
     """
     This file implements a value-added estimator inspired by
@@ -167,7 +167,11 @@ def moment_matching_alg(data, outcome, teacher, dense_controls, class_level_vars
         beta, x = estimate(data, data[outcome].values, dense_controls, cat,
                            check_rank=True)
         # add teacher fixed effects back in
-        residual = data[outcome].values - x.A[:, n_teachers:].dot(beta[n_teachers:])
+        try:
+            x = x.A
+        except AttributeError:
+            pass
+        residual = data[outcome].values - x[:, n_teachers:].dot(beta[n_teachers:])
         residual -= np.mean(residual)
         
     assert np.all(np.isfinite(residual))
@@ -242,7 +246,8 @@ def calculate_va(data, outcome, teacher, covariates, class_level_vars,
     assert teacher in data.columns
     if covariates is not None:
         assert set(covariates).issubset(set(data.columns))
-    assert set(class_level_vars).issubset(set(data.columns))
+    if method != 'fk':
+        assert set(class_level_vars).issubset(set(data.columns))
 
     # Preprocessing
     use_cols = [outcome, teacher]

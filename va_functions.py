@@ -4,7 +4,8 @@ import pandas as pd
 import scipy.sparse as sps
 from functools import reduce
 import sys
-sys.path += ['/n/home09/esantorella/hdfe']
+from config import *
+sys.path += [hdfe_dir]
 from hdfe import Groupby
 
 
