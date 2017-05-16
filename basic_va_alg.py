@@ -8,8 +8,9 @@ import scipy.linalg
 import sys
 from config import *
 sys.path += [hdfe_dir]
-from hdfe import Groupby, estimate
+from hdfe import Groupby, estimate, make_dummies
 from variance_ls_numopt import get_g_and_tau
+from scipy.optimize import minimize
 
 
 # A should be a vector, rest are matrices
@@ -102,42 +103,161 @@ def fk_alg(data, outcome, teacher, dense_controls, class_level_vars,
     return ans, sigma_mu_squared
 
 
-# TODO: this is the old version
-def mle(data, outcome, teacher, dense_controls, categorical_controls, jackknife,
-        moments_only):
-    def demean(mat):
-        return mat - np.mean(mat, 0)
-    def mean(mat):
-        return np.mean(mat, 0)
-
-    grouped = Groupby(data[teacher])
-    # since using within estimator, just make everything dense
+def mle(data, outcome, teacher, dense_controls, categorical_controls,
+        jackknife, class_level_vars, moments_only):
+    #TODO: make sure there is not a constant in dense_controls
     if categorical_controls is None:
         x = dense_controls
+    elif len(categorical_controls) == 1:
+        x = np.hstack((dense_controls,
+                       make_dummies(data[categorical_controls[0]], True).A))
     else:
         x = np.hstack((dense_controls, 
-                sps.hstack((make_dummies(data[elt]) for elt in categorical_controls)).A))
-    x_means = grouped.apply(mean, x, width = x.shape[1], broadcast=False)
-    y_means = grouped.apply(mean, data[outcome].values, broadcast=False)
-    beta_plus_lambda = np.linalg.lstsq(x_means, y_means)[0]
-    errors_2 = y_means - x_means.dot(beta_plus_lambda)
-    ssr_2 = errors_2.dot(errors_2)
-    x_demeaned = grouped.apply(demean, x, broadcast=True)
-    y_demeaned = grouped.apply(demean, data[outcome].values, broadcast=True)
-    beta = np.linalg.lstsq(x_demeaned, y_demeaned)[0]
-    errors_1 = y_demeaned - x_demeaned.dot(beta)
-    ssr_1 = errors_1.dot(errors_1)
-    n_teachers = len(set(data[teacher]))
-    assert n_teachers == len(y_means)
-    # sigma_mu_^2 + sigma_e^2/K
-    tmp = ssr_2 / n_teachers
-    sigma_epsilon_sq = ssr_1 / (len(data) - n_teachers)
-    # assume number of students per class is constant
-    sigma_mu_sq = tmp - sigma_epsilon_sq / (len(data) / n_teachers)
-    # mu ~ N(x_means * lambda, sigma_mu_sq)
-    lambda_ = beta_plus_lambda - beta
-    total_variance = np.var(x_means.dot(lambda_)) + sigma_mu_sq
-    return total_variance, sigma_epsilon_sq
+                sps.hstack((make_dummies(data[elt], True) for elt in categorical_controls)).A))
+
+    assert len(class_level_vars) == 1
+    class_grouped = Groupby(data[class_level_vars])
+    y = data[outcome].values
+    n_students_per_class = class_grouped.apply(len, y, broadcast=False)
+    n_classes = len(class_grouped.first_occurrences)
+    n_students = len(data)
+
+    y_tilde = class_grouped.apply(lambda x: x - np.mean(x), y)
+    x_tilde = class_grouped.apply(lambda x: x - np.mean(x, 0), x, 
+                                  width = x.shape[1])
+    xx_tilde = x_tilde.T.dot(x_tilde)
+    xy_tilde = x_tilde.T.dot(y_tilde)[:, 0]
+    assert xy_tilde.ndim == 1
+
+    x_bar = class_grouped.apply(lambda x: np.mean(x, 0), x, broadcast=False, width=x.shape[1])
+    y_bar = class_grouped.apply(np.mean, y, broadcast=False)
+    print('y bar')
+    print(y_bar[:10])
+    
+    teachers = data[teacher].values[class_grouped.first_occurrences]
+    print('teachers', teachers[:10])
+    # Should only be applied to objects that have been created with
+    # class_grouped.apply
+    teacher_grouped = Groupby(teachers)
+    n_teachers = len(teacher_grouped.first_occurrences)
+    print('Number of teachers', n_teachers)
+
+    def get_precisions(sigma_theta_squared, sigma_epsilon_squared):
+        return 1 / (sigma_theta_squared + sigma_epsilon_squared / n_students_per_class)
+    
+    #@profile
+    def update_variances(beta, beta_plus_lambda, sigma_mu_squared, 
+                         sigma_theta_squared, sigma_epsilon_squared,
+                         alpha,
+                         y_bar_bar, x_bar_bar, y_bar_tilde, x_bar_tilde):
+        #@profile
+        def get_ll(params):
+            sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared = params
+            precisions = get_precisions(sigma_theta_squared, sigma_epsilon_squared)
+            precision_sum = teacher_grouped.apply(np.sum, precisions, broadcast=False)
+            ll = (n_classes - n_students / 2) * np.log(sigma_epsilon_squared)
+            ll -= np.sum(np.log(precision_sum))
+            ll +=  np.log(sigma_mu_squared) * n_teachers / 2 
+            ll -= np.sum(np.log(1 / precision_sum + sigma_mu_squared))
+            assert np.isscalar(ll)
+            tmp1 = (y_bar_bar[teacher_grouped.first_occurrences] - x_bar_bar[teacher_grouped.first_occurrences].dot(beta_plus_lambda) - alpha)**2
+            tmp = .5 * np.sum(tmp1 / (1/ precision_sum + sigma_mu_squared))
+            ll -= tmp
+            assert np.isscalar(ll)
+            ll -= .5 * np.sum((y_tilde[:, 0] - x_tilde.dot(beta))**2) / sigma_epsilon_squared
+            assert np.isscalar(ll)
+            ll -= .5 * precisions.dot((y_bar_tilde - x_bar_tilde.dot(beta))**2)
+            assert np.isscalar(ll)
+            return -1 * ll
+
+        result = minimize(get_ll, 
+                    (sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared), 
+                    method='COBYLA',
+                    constraints={'type': 'ineq', 'fun': lambda x: x})
+        print('Variances:')
+        print(result['x'])
+        sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared = result['x']
+
+        return sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared, precisions
+
+
+    #@profile
+    def update_coefficients(sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared,
+                            precisions):
+        assert np.isscalar(sigma_mu_squared)
+        assert np.isscalar(sigma_theta_squared)
+        assert np.isscalar(sigma_epsilon_squared)
+        # Move these ourside function
+        assert precisions.shape == (n_classes,)
+        assert y_bar.shape == (n_classes,)
+        assert x_bar.shape == (n_classes, x.shape[1])
+        # For beta
+        precision_weights = teacher_grouped.apply(lambda x: x / np.sum(x), precisions)
+
+        y_bar_bar = teacher_grouped.apply(np.sum, 
+                                        precision_weights[:, 0] * y_bar)[:, 0]
+        assert y_bar_bar.shape == (n_classes,)
+        
+        x_bar_bar = teacher_grouped.apply(lambda x: np.sum(x, 0), 
+                                          precision_weights * x_bar,
+                                          width=x_bar.shape[1])
+        assert x_bar_bar.shape == (n_classes, x.shape[1])
+
+        y_bar_tilde = y_bar - y_bar_bar
+        x_bar_tilde = x_bar - x_bar_bar
+
+        x_mat = xx_tilde / sigma_epsilon_squared + x_bar_tilde.T.dot(x_bar_tilde * precisions[:, None])
+        assert x_mat.shape == (x.shape[1], x.shape[1])
+        y_mat = xy_tilde / sigma_epsilon_squared + x_bar_tilde.T.dot(y_bar_tilde * precisions)
+        assert y_mat.shape == (x.shape[1],)
+        beta = np.linalg.solve(x_mat, y_mat)
+        assert beta.shape == (x.shape[1],)
+        # For lambda
+        teacher_precision_sums = teacher_grouped.apply(np.sum, precisions, broadcast=False)
+        assert teacher_precision_sums.shape == (n_teachers,)
+        # Weights aren't actually square-rooted, but do this to distribute them
+        weights = 1 / np.sqrt(1 / teacher_precision_sums + sigma_mu_squared)
+        assert np.all(np.isfinite(weights))
+        assert weights.shape == teacher_precision_sums.shape
+
+        y_w = y_bar_bar[teacher_grouped.first_occurrences] * weights
+        assert y_w.shape == (n_teachers,)
+        x_w = np.hstack((np.ones((n_teachers, 1)), x_bar_bar[teacher_grouped.first_occurrences, :])) * weights[:, None]
+        assert x_w.shape == (n_teachers, x.shape[1] + 1)
+        beta_plus_lambda = np.linalg.lstsq(x_w, y_w)[0]
+        alpha, beta_plus_lambda = beta_plus_lambda[0], beta_plus_lambda[1:]
+        assert beta_plus_lambda.shape == beta.shape
+
+        return beta, beta_plus_lambda, alpha, y_bar_bar, x_bar_bar, y_bar_tilde, x_bar_tilde
+
+    beta = np.linalg.lstsq(y_tilde, x_tilde)[0]
+    beta_plus_lambda = np.zeros(x.shape[1])
+    #sigma_mu_squared = np.var(y) / 3
+    #sigma_theta_squared = sigma_mu_squared
+    #sigma_epsilon_squared = sigma_mu_squared
+    sigma_mu_squared = .024
+    sigma_theta_squared = .6
+    sigma_epsilon_squared = .4
+    print('initial variances', sigma_mu_squared)
+    precisions = get_precisions(sigma_theta_squared, sigma_epsilon_squared)
+    alpha = np.mean(y)
+
+    for i in range(50):
+        print(i)
+        beta, beta_plus_lambda, alpha, y_bar_bar, x_bar_bar, y_bar_tilde, x_bar_tilde =\
+                update_coefficients(sigma_mu_squared, sigma_theta_squared,
+                                    sigma_epsilon_squared,
+                                    precisions)
+        print('beta', beta)
+        print('beta plus lambda', beta_plus_lambda)
+        print(i + .5)
+        sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared,\
+            precisions=\
+                update_variances(beta, beta_plus_lambda, alpha, sigma_mu_squared, 
+                                 sigma_theta_squared, sigma_epsilon_squared,
+                                 y_bar_bar, x_bar_bar, y_bar_tilde, x_bar_tilde)
+
+    return sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared, beta, beta_plus_lambda, alpha
     
 
 def moment_matching_alg(data, outcome, teacher, dense_controls, class_level_vars,
@@ -267,9 +387,8 @@ def calculate_va(data, outcome, teacher, covariates, class_level_vars,
     to_recode = [teacher] if categorical_controls is None \
                 else [teacher] + categorical_controls
     for col in to_recode:
-        if len(set(data[col])) <= max(data[col]):
+        if np.issubdtype(data[col].dtype, np.number) and len(set(data[col])) <= max(data[col]):
             _, data[col] = np.unique(data[col], return_inverse=True)
-
         
     dense_controls = None if covariates is None else data[covariates].values
     if add_constant:
@@ -293,7 +412,7 @@ def calculate_va(data, outcome, teacher, covariates, class_level_vars,
                       jackknife, moments_only, teacher_controls)
     elif method == 'mle':
         return mle(data, outcome, teacher, dense_controls, categorical_controls,
-                   jackknife, moments_only)
+                   jackknife, class_level_vars, moments_only)
     else:
         raise NotImplementedError('Only the methods ks, cfr, and fk are currently implmented.')
 

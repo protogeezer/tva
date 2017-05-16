@@ -4,8 +4,7 @@ import pandas as pd
 
 def simulate(params, seed):
     np.random.seed(seed)
-    num_teachers = params['num teachers']
-    beta = params['beta']
+    num_teachers, beta = params['num teachers'], params['beta']
     sd_epsilon, sd_mu, sd_theta = params['sd epsilon'], params['sd mu'], params['sd theta']
     mean_class_size, mean_classes_taught = params['mean class size'], params['mean classes taught']
     
@@ -35,11 +34,14 @@ def simulate(params, seed):
     # Create categorical data
     categorical = np.random.choice(range(5), len(data))
     data[:, 7] = categorical
-    fixed_effects = np.random.normal(0, 1, 5)
+    #fixed_effects = np.random.normal(0, 1, 5)
+    fixed_effects = np.zeros(5)
     data[:, 4] += np.random.normal(0, sd_epsilon, len(data)) \
                  + np.dot(data[:, 5:7], beta)\
                  + fixed_effects[categorical]
-    data = pd.DataFrame(data, columns=('teacher', 'class id', 'student id', 'true va', 'score', 'x1', 'x2', 'c1'))
+    data = pd.DataFrame(data, 
+                        columns=('teacher', 'class id', 'student id', 
+                                 'true va', 'score', 'x1', 'x2', 'c1'))
     for col in ['student id', 'teacher', 'class id', 'c1']:
         data[col] = data[col].astype(int)
     return data
