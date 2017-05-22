@@ -33,7 +33,7 @@ def estimate_mu_variance(data, teacher):
     def f(vector):
         val = 0
         for i in range(1, len(vector)):
-            val += np.dot(vector[i:], vector[:-i])
+            val += vector[i:].T.dot(vector[:-i])
 
         return np.array([val, len(vector) * (len(vector) - 1) /2])
 
@@ -150,23 +150,25 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
                          sigma_theta_squared, sigma_epsilon_squared,
                          alpha,
                          y_bar_bar, x_bar_bar, y_bar_tilde, x_bar_tilde):
+        assert y_bar_bar.shape == (n_classes,)
+        assert y_bar_tilde.shape == (n_classes,)
         #@profile
         def get_ll(params):
             sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared = params
             precisions = get_precisions(sigma_theta_squared, sigma_epsilon_squared)
             precision_sum = teacher_grouped.apply(np.sum, precisions, broadcast=False)
+            assert precision_sum.shape == (n_teachers,)
             ll = (n_classes - n_students / 2) * np.log(sigma_epsilon_squared)
             ll -= np.sum(np.log(precision_sum))
             ll +=  np.log(sigma_mu_squared) * n_teachers / 2 
             ll -= np.sum(np.log(1 / precision_sum + sigma_mu_squared))
             assert np.isscalar(ll)
-            tmp1 = (y_bar_bar[teacher_grouped.first_occurrences] - x_bar_bar[teacher_grouped.first_occurrences].dot(beta_plus_lambda) - alpha)**2
-            tmp = .5 * np.sum(tmp1 / (1/ precision_sum + sigma_mu_squared))
-            ll -= tmp
+            tmp1 = (y_bar_bar[teacher_grouped.first_occurrences] - x_bar_bar[teacher_grouped.first_occurrences, :].dot(beta_plus_lambda) - alpha)**2
+            ll -= tmp1.dot(1 / (1 / precision_sum + sigma_mu_squared)) / 2
             assert np.isscalar(ll)
-            ll -= .5 * np.sum((y_tilde[:, 0] - x_tilde.dot(beta))**2) / sigma_epsilon_squared
+            ll -= np.sum((y_tilde[:, 0] - x_tilde.dot(beta))**2) / sigma_epsilon_squared / 2
             assert np.isscalar(ll)
-            ll -= .5 * precisions.dot((y_bar_tilde - x_bar_tilde.dot(beta))**2)
+            ll -= precisions.dot((y_bar_tilde - x_bar_tilde.dot(beta))**2) / 2
             assert np.isscalar(ll)
             return -1 * ll
 
@@ -232,12 +234,12 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
 
     beta = np.linalg.lstsq(y_tilde, x_tilde)[0]
     beta_plus_lambda = np.zeros(x.shape[1])
-    #sigma_mu_squared = np.var(y) / 3
-    #sigma_theta_squared = sigma_mu_squared
-    #sigma_epsilon_squared = sigma_mu_squared
-    sigma_mu_squared = .024
-    sigma_theta_squared = .6
-    sigma_epsilon_squared = .4
+    sigma_mu_squared = np.var(y) / 3
+    sigma_theta_squared = sigma_mu_squared
+    sigma_epsilon_squared = sigma_mu_squared
+    #sigma_mu_squared = .1
+    #sigma_theta_squared = .6
+    #sigma_epsilon_squared = .4
     print('initial variances', sigma_mu_squared)
     precisions = get_precisions(sigma_theta_squared, sigma_epsilon_squared)
     alpha = np.mean(y)
@@ -270,6 +272,7 @@ def moment_matching_alg(data, outcome, teacher, dense_controls, class_level_vars
 
     # If method is 'ks', just ignore teachers when residualizing
     if method == 'ks':
+        assert 'teacher' in data.columns
         beta, x, residual = estimate(data, data[outcome].values, dense_controls, 
                                   categorical_controls, get_residual=True,
                                   check_rank=True)
@@ -404,6 +407,7 @@ def calculate_va(data, outcome, teacher, covariates, class_level_vars,
             np.unique(data[teacher], return_inverse=True)
 
     if method in ['ks', 'cfr']:
+        assert 'teacher' in data.columns
         return moment_matching_alg(data, outcome, teacher, dense_controls, class_level_vars,
                 categorical_controls, jackknife, moments_only, method, add_constant)
     elif method == 'fk':
