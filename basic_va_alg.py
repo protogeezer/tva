@@ -158,8 +158,9 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
             precisions = get_precisions(sigma_theta_squared, sigma_epsilon_squared)
             precision_sum = teacher_grouped.apply(np.sum, precisions, broadcast=False)
             assert precision_sum.shape == (n_teachers,)
-            ll = (n_classes - n_students / 2) * np.log(sigma_epsilon_squared)
-            ll -= np.sum(np.log(precision_sum))
+            ll = n_classes * np.log(sigma_theta_squared) / 2\
+                 + (n_classes - n_students / 2) * np.log(sigma_epsilon_squared)
+            ll -= np.sum(np.log(precision_sum))/2
             ll +=  np.log(sigma_mu_squared) * n_teachers / 2 
             ll -= np.sum(np.log(1 / precision_sum + sigma_mu_squared))
             assert np.isscalar(ll)
