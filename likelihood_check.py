@@ -1,91 +1,82 @@
 import numpy as np
 import pystan
 import time
+from config import *
+import sys
+sys.path += [hdfe_dir]
+from hdfe import Groupby
 
+def summary_stats(d):
+    return {k: (np.mean(v), np.var(v)) for k, v in d.items()}
 
 # Model: y_i ~ N(mu, sigma_epsilon); set sigma_epsilon = 1
 model_one = """
 data {
-    int<lower=0> n_students; // number of students
+    int<lower=1> n_students; // number of students
     real y[n_students];     // outcomes
+    // int<lower=1> n_classes;
+    // int<lower=1, upper=n_classes> class_id[n_students];
 }
 parameters {
     real mu;
+    real<lower=0> sigma_epsilon;
+    // real theta[n_classes];
+    real theta;
 }
+
 model {
-    y ~ normal(mu, 1);
+    theta ~ normal(0, 1);
+    y ~ normal(mu + theta, sigma_epsilon);
+    // for (i in 1:n_students)
+    //     y[i] ~ normal(mu + theta[class_id[i]], sigma_epsilon);
 }
 """
 
 model_one_alt = """
 data {
     int<lower=0> n_students; // number of students
-    real y_tilde[n_students];     // outcomes
+    real ssr;
     real y_bar;
 }
 parameters {
     real mu;
+    real<lower=0> sigma_epsilon;
 }
 transformed parameters {
-    real sigma_epsilon_over_n;
-    sigma_epsilon_over_n = sqrt(1.0 / n_students);
+    real<lower=0> sqrt_h;
+    sqrt_h = sqrt(1 + square(sigma_epsilon) / n_students);
 }
 model {
-    y_tilde ~ normal(0, 1);
-    y_bar ~ normal(mu, sigma_epsilon_over_n);
+    ssr ~ normal(0, sigma_epsilon);
+    y_bar ~ normal(mu, sqrt_h);
+    target += (3 - n_students) * log(sigma_epsilon) + log(1) - log(sqrt_h);
 }
 """
 
-y = np.array([1, 2, 3])
+y = np.array([1, 2, 3, 4, 7])
+class_id = np.array([0, 0, 0, 1, 1]) + 1
+n_classes = len(set(class_id))
 
-if True:
-    dat = {'n_students': len(y), 'y': y}
+dat = {'n_students': len(y), 'y': y, 'class_id': class_id,
+        'n_classes': n_classes}
 
-    start = time.time()
-    fit = pystan.stan(model_code=model_one, data=dat, chains=4)
-    ext = fit.extract()
-    print(time.time() - start)
+start = time.time()
+fit = pystan.stan(model_code=model_one, data=dat)
+ext = fit.extract()
+first_time = time.time() - start
 
-    dat_transformed = {'n_students': len(y),
-                       'y_tilde': y - np.mean(y),
-                       'y_bar': np.mean(y)}
 
-    fit = pystan.stan(model_code=model_one_alt, data=dat_transformed, chains=4)
-    ext_alt = fit.extract()
+dat_transformed = {'n_students': len(y),
+                   'ssr': np.sqrt(np.sum((y - np.mean(y))**2)),
+                   'y_bar': np.mean(y)}
 
-    print('Mean difference', np.mean(ext['mu']) - np.mean(ext_alt['mu']))
-    print('Var difference', np.var(ext['mu']) - np.var(ext_alt['mu']))
+start = time.time()
+fit = pystan.stan(model_code=model_one_alt, data=dat_transformed)
+ext_alt = fit.extract()
+second_time = time.time() - start
 
-assert False
+print(summary_stats(ext))
+print(summary_stats(ext_alt))
 
-# Now try to fit the variance of theta instead of forcing it to be 1
-# This doesn't work with only one class, I think. Gives infinite sigma_theta
-code_int_over_class = """
-data {
-    int<lower=0> n_students; // number of students
-    real y[n_students];     // outcomes
-}
-parameters {
-    real mu;    // teacher effect
-    real theta;
-    real<lower=0> sigma_theta; // classroom effect variance
-    real<lower=0> sigma_epsilon; // variance
-}
-model {
-    mu ~ normal(0, 1);
-    theta ~ normal(0, sigma_theta);
-    y ~ normal(mu + theta, sigma_epsilon);
-}
-"""
-
-if False:
-    start = time.time()
-    fit = pystan.stan(model_code=code_int_over_class, data=dat, iter=4000, chains=4)
-    ext = fit.extract()
-    print(time.time() - start)
-
-# Now define multiple classes
-code_multiple_classes = """
-"""
-
+print('Time difference', second_time - first_time)
 
