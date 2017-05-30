@@ -13,7 +13,7 @@ from scipy.optimize import check_grad, minimize_scalar
 # And because it allows for objective function, grad, and hessian to come from same function
 # This is a *minimization* problem
 def newton(f, x):
-    max_iter = 20
+    max_iter = 4
     abs_grad = 1
     i = 0
     # do at least 2 iterations, just in case gradient is scaled poorly
@@ -22,7 +22,10 @@ def newton(f, x):
         print(x)
         
         obj_fun_old, grad, hess = f(x, True, True)
-        step = -1 * grad / hess
+        if grad.shape == hess.shape:
+            step = -1 * grad / hess
+        else:
+            step = -1 * np.linalg.lstsq(hess, grad)[0]
         obj_fun = f(x + step)
         # Line search
         n_tries = 0
@@ -35,7 +38,8 @@ def newton(f, x):
             break
 
         x += step
-        abs_grad = abs(grad)
+        abs_grad = np.max(np.abs(grad))
+        assert np.isscalar(abs_grad)
         i += 1
         
     return x, obj_fun

@@ -7,6 +7,7 @@ def simulate(params, seed):
     num_teachers, beta = params['num teachers'], params['beta']
     sd_epsilon, sd_mu, sd_theta = params['sd epsilon'], params['sd mu'], params['sd theta']
     mean_class_size, mean_classes_taught = params['mean class size'], params['mean classes taught']
+    lambda_ = np.array([0, 1])
     
     def simulate_one_teacher(teacher_id):
         classes = range(max(1, np.random.poisson(mean_classes_taught)))
@@ -20,7 +21,8 @@ def simulate(params, seed):
         data[:, 0] = teacher_id
         data[:, 1] = class_id_vector
         data[:, 2] = np.hstack((range(s) for s in sizes))+100*class_id_vector+10000*teacher_id
-        mu = np.random.normal(0, sd_mu)
+        data[:, 5:7] = np.random.normal(0, 1, (len(data), 2))
+        mu = np.random.normal(np.mean(data[:, 5:7], 0).dot(lambda_), sd_mu)
         data[:, 3] = mu
         theta_vector = np.hstack((np.tile(np.random.normal(0, sd_theta), s)
                                   for s in  sizes))
@@ -29,8 +31,8 @@ def simulate(params, seed):
         return data
         
     data = np.vstack((simulate_one_teacher(i) for i in range(num_teachers)))
-    data[:, 5] = np.random.normal(0, 1, len(data))
-    data[:, 6] = data[:, 3] + np.random.normal(0, 1, len(data))
+    # data[:, 5] = np.random.normal(0, 1, len(data))
+    # data[:, 6] = data[:, 3] + np.random.normal(0, 1, len(data))
     # Create categorical data
     categorical = np.random.choice(range(5), len(data))
     data[:, 7] = categorical

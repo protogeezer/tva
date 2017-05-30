@@ -4,10 +4,12 @@ import pandas as pd
 import scipy.sparse as sps
 from functools import reduce
 import sys
-from config import *
+from config_tva import *
 sys.path += [hdfe_dir]
 from hdfe import Groupby
 
+def get_ll(sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared):
+    pass
 
 toString = lambda *x: '\n'.join((str(elt) for elt in x))
 # For printing stuff

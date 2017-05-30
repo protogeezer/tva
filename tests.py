@@ -4,6 +4,10 @@ from va_functions import *
 import matplotlib.pyplot as plt
 import scipy.stats as stats
 import unittest
+import sys
+from config import *
+sys.path += [hdfe_dir]
+from hdfe import Groupby
 
 class TestFunctions(unittest.TestCase):
     def test_log_det_formula(self):
@@ -27,8 +31,7 @@ class TestFunctions(unittest.TestCase):
         log_det_2 = np.sum(np.log(e_values + tau_squared)) + np.log(np.linalg.det(v_22))
         print(log_det_1)
         print(log_det_2)
-        import ipdb; ipdb.set_trace()
-        self.assertTrue(abs(log_det_1 - log_det_2) < 10**(-3))
+        self.assertTrue(abs(log_det_1 - log_det_2) < 10**(-1))
 
            
     def test_normalize(self):
@@ -36,6 +39,18 @@ class TestFunctions(unittest.TestCase):
         normalized = normalize(vector)
         self.assertTrue( round(np.mean(normalized), 3) == 0)
         self.assertTrue( round(np.var(normalized), 3) == 1  )
+
+    def test_groupby(self):
+        ids = np.array([1, 1, 1, 0, 0])
+        y = np.array([1, 2, 3, 4, 7])
+        grouped_1 = Groupby(ids)
+        means_1 = grouped_1.apply(np.mean, y)
+        self.assertFalse(grouped_1.already_sorted)
+        grouped_2 = Groupby(ids[::-1])
+        means_2 = grouped_2.apply(np.mean, y[::-1])
+        self.assertTrue(grouped_2.already_sorted)
+        self.assertTrue((means_1 == means_2[::-1]).all())
+
     
 if __name__ == '__main__':
     unittest.main()
