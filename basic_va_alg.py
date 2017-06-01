@@ -15,8 +15,6 @@ from variance_ls_numopt import newton
 import ad
 from ad.admath import *
 
-def profile(f):
-    return f
 
 # A should be a vector, rest are matrices
 # assume symmetric and positive definite: C = B;
@@ -148,85 +146,46 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
     assert teacher_grouped.already_sorted
     n_teachers = len(teacher_grouped.first_occurrences)
 
-    def get_precisions(sigma_theta_squared, sigma_epsilon_squared):
-        return 1 / (sigma_theta_squared + sigma_epsilon_squared / n_students_per_class)
-    
+    # Vectorize and encapsulate variances
+    ll_vec_func = get_ll_vec_func(n_students_per_class, n_classes, n_students, 
+                                  y_tilde, x_tilde, x_bar, y_bar, 
+                                  teacher_grouped)
+
     def update_variances(beta, beta_plus_lambda, alpha, sigma_mu_squared, 
-                         sigma_theta_squared, sigma_epsilon_squared,
-                         y_bar_bar, x_bar_bar, y_bar_tilde, x_bar_tilde):
- 
-        def get_ll(params):
-            sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared = params
-            h = get_precisions(sigma_theta_squared, sigma_epsilon_squared)
-            h_sum = teacher_grouped.apply(np.sum, h, broadcast=False)
+                         sigma_theta_squared, sigma_epsilon_squared):
 
-            ll = (n_classes - n_students) * np.log(sigma_epsilon_squared)\
-                 + np.sum(np.log(h)) - np.sum(np.log(h_sum))\
-                 - np.sum(np.log(sigma_mu_squared + 1 / h_sum))\
-                 - np.sum((y_tilde[:, 0] - x_tilde.dot(beta))**2) / sigma_epsilon_squared\
-                 - h.dot((y_bar_tilde - x_bar_tilde.dot(beta))**2)\
-                 - np.dot((y_bar_bar - x_bar_bar.dot(beta_plus_lambda) - alpha)**2,
-                          1 / (sigma_mu_squared + 1 / h_sum))
-            return -1 * ll
+        def get_ll_helper(params):
+            params = np.concatenate((params, beta, beta_plus_lambda, [alpha]))
+            return ll_vec_func(params)
+             
+        def get_grad_helper(params):
+            print('in gradient', params)
+            sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared = \
+                     params
+            grad = get_grad_variances(sigma_mu_squared, sigma_theta_squared, 
+                                      sigma_epsilon_squared, beta, 
+                                      beta_plus_lambda, alpha, 1e-7, ll_vec_func)
+            print('gradient', grad)
+            return grad
 
 
-        auto_diff = False
-
-        if auto_diff:
-
-            teacher_dummies = make_dummies(teachers, False).A
-
-            def get_ll(sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared):
-                h = 1 / ((n_students_per_class / sigma_epsilon_squared)**(-1) + sigma_theta_squared)
-                h_sum = teacher_grouped.apply(np.sum, h, broadcast=False)
-                print('Old h sum', h_sum[0])
-                print(h[0])
-                h_sum = teacher_dummies.T.dot(h)
-                print(h_sum[0])
-
-                ll = (n_classes - n_students) * log(sigma_epsilon_squared)
-                ll += sum(log(h)) - sum(log(h_sum))
-                ll += -sum(h_sum**(-1) + log(sigma_mu_squared))
-                ll += -sum((y_tilde[:, 0] - x_tilde.dot(beta))**2) / sigma_epsilon_squared
-                ll += -h.dot((y_bar_tilde - x_bar_tilde.dot(beta))**2)
-                ll += -np.dot((y_bar_bar - x_bar_bar.dot(beta_plus_lambda) - alpha)**2,
-                              1 / (h_sum**(-1) + sigma_mu_squared))
-                return -1 * ll
-
-            def get_ll_helper(params, get_grad=False, get_hess=False):
-                print('Params', params)
-                sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared = ad.adnumber(params)
-                ll = get_ll(sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared)
-                print('ll', ll)
-                if get_grad:
-                    grad = np.array(ll.gradient([sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared]))
-                    assert grad.shape[0] == 3
-                    if get_hess:
-                        hess = np.array(ll.hessian([sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared]))
-                        assert hess.shape[0] == 3
-                        assert hess.shape[1] == 3
-                        return ll, grad, hess
-                    return ll, grad
-                return ll
-
-            print('\n\n\n')
-            result = newton(get_ll_helper, 
-                            ad.adnumber(np.array([sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared])))
-            sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared = [float(x) for x in result[0]]
-        else:
-            result = minimize(get_ll, 
-                        (sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared), 
-                        method='COBYLA',
-                        constraints={'type': 'ineq', 'fun': lambda x: x})
-            sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared = result['x']
+        # bad overshooting -> bad hessian approximation -> lower maxcor needed
+        # but why does the gradient get so huge?
+        # Probably fixed with upper bound.
+        result = minimize(get_ll_helper, [sigma_mu_squared, sigma_theta_squared,
+                                           sigma_epsilon_squared], 
+                          jac=get_grad_helper, method='L-BFGS-B',
+                          bounds=[(1e-5, np.var(y)), (1e-5, np.var(y)), (1e-5, np.var(y))],
+                          options={'disp': False, 'factr': 10})
+                    #constraints={'type': 'ineq', 'fun': lambda x: x})
+        sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared = result['x']
 
         return sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared
 
 
-    @profile
     def update_coefficients(sigma_mu_squared, sigma_theta_squared, 
                             sigma_epsilon_squared):
-        h = get_precisions(sigma_theta_squared, sigma_epsilon_squared)
+        h = 1 / (sigma_theta_squared + sigma_epsilon_squared / n_students_per_class)
         h_sum_long = teacher_grouped.apply(np.sum, h)[:, 0]
         # For beta
         precision_weights = h / h_sum_long
@@ -253,35 +212,59 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
         assert np.all(np.isfinite(weights))
 
         y_w = y_bar_bar * weights
-        x_w = np.hstack((np.ones((n_teachers, 1)), x_bar_bar)) * weights[:, None]
+        assert y_w.ndim == 1
+        stacked = np.hstack((np.ones((n_teachers, 1)), x_bar_bar))
+        x_w = stacked * weights[:, None]
         beta_plus_lambda = np.linalg.lstsq(x_w, y_w)[0]
         alpha, beta_plus_lambda = beta_plus_lambda[0], beta_plus_lambda[1:]
 
-        return beta, beta_plus_lambda, alpha, y_bar_bar, x_bar_bar, y_bar_tilde, x_bar_tilde
+        return beta, beta_plus_lambda, alpha, x_bar_bar
 
-    beta = np.linalg.lstsq(y_tilde, x_tilde)[0]
-    beta_plus_lambda = np.zeros(x.shape[1])
-    sigma_mu_squared = np.var(y) / 3
-    sigma_theta_squared = sigma_mu_squared
-    sigma_epsilon_squared = sigma_mu_squared
+    sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared = \
+                np.ones(3) * np.var(y) / 6
 
-    for i in range(10):
-        beta, beta_plus_lambda, alpha, y_bar_bar, x_bar_bar, y_bar_tilde, x_bar_tilde =\
+    for i in range(5):
+        print(i)
+        beta, beta_plus_lambda, alpha, x_bar_bar =\
                 update_coefficients(sigma_mu_squared, sigma_theta_squared,
                                     sigma_epsilon_squared)
+        print('beta', beta[:5])
 
         sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared\
             = update_variances(beta, beta_plus_lambda, alpha, sigma_mu_squared, 
-                                 sigma_theta_squared, sigma_epsilon_squared,
-                                 y_bar_bar, x_bar_bar, y_bar_tilde, x_bar_tilde)
+                                 sigma_theta_squared, sigma_epsilon_squared)
+        print('sigma mu squared', sigma_mu_squared)
+
+    beta, beta_plus_lambda, alpha, x_bar_bar =\
+                update_coefficients(sigma_mu_squared, sigma_theta_squared,
+                                    sigma_epsilon_squared)
 
     lambda_ = beta_plus_lambda - beta
     predictable_var = np.var(x_bar_bar.dot(lambda_))
-    # Get asymptotic distribution of lambda
+    grad = get_grad_all(sigma_mu_squared, sigma_theta_squared,
+                        sigma_epsilon_squared, beta, beta_plus_lambda, alpha, 
+                        10**(-9), ll_vec_func)
+    hessian_1 = get_hess_all(sigma_mu_squared, sigma_theta_squared,
+                         sigma_epsilon_squared, beta, beta_plus_lambda, alpha, 
+                         10**(-6), ll_vec_func)
 
-    return {'sigma mu squared': sigma_mu_squared, 'sigma theta squared': sigma_theta_squared, 
-            'sigma epsilon squared': sigma_epsilon_squared, 'beta': beta, 'lambda': lambda_, 
-            'alpha': alpha, 'predictable var': predictable_var}
+    hessian = get_hess_2(sigma_mu_squared, sigma_theta_squared,
+                         sigma_epsilon_squared, beta, beta_plus_lambda, alpha, 
+                         10**(-6), ll_vec_func)
+    print(np.max(np.abs(hessian - hessian_1)))
+
+    asymp_var = np.linalg.inv(hessian) / np.sqrt(n_teachers)
+    var_lambda = asymp_var[-1 - len(beta): -1, -1 - len(beta): -1]
+    bias_correction = np.sum(x_bar_bar.dot(np.linalg.cholesky(var_lambda))**2) /                      n_teachers
+    print('bias correction', bias_correction)
+    total_var = sigma_mu_squared + predictable_var - bias_correction
+
+    return {'sigma mu squared': sigma_mu_squared, 
+            'sigma theta squared': sigma_theta_squared, 
+            'sigma epsilon squared': sigma_epsilon_squared, 'beta': beta, 
+            'lambda':lambda_, 'alpha': alpha, 'predictable var':predictable_var,
+            'gradient': grad, 'hessian': np.array(hessian),
+            'total var': total_var}
     
 
 def moment_matching_alg(data, outcome, teacher, dense_controls, class_level_vars,
