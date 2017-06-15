@@ -63,7 +63,6 @@ def get_ll(mu_p, beta_p, v, teacher_controls, diag_mat, sigma_sq):
     tmp = (np.eye(len(b)) - P_R).dot(b)
 #    ll = np.log(np.linalg.det(Sigma)) + tmp.dot(Sigma_inv.dot(tmp.T))
     ll = np.linalg.slogdet(Sigma)[1] + tmp.dot(Sigma_inv.dot(tmp.T))
-    print(ll)
     return ll, Sigma_inv, b, R
 
 

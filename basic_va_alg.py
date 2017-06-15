@@ -107,7 +107,6 @@ def fk_alg(data, outcome, teacher, dense_controls, class_level_vars,
     return ans, sigma_mu_squared
 
 
-#@profile
 def mle(data, outcome, teacher, dense_controls, categorical_controls,
         jackknife, class_level_vars, moments_only):
     #TODO: make sure there is not a constant in dense_controls
@@ -126,17 +125,16 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
     class_grouped = Groupby(data[class_level_vars].values)
     assert class_grouped.already_sorted
 
+    # Make sure everything a varies within teacher, so beta is identified
     x_with_teacher_dummies = np.hstack((make_dummies(data[teacher], False).A, np.array(x)))
     collinear_cols, not_collinear_cols = find_collinear_cols(x_with_teacher_dummies)
     if len(collinear_cols) > 0:
         print('Found', len(collinear_cols), 'collinear columns in x.')
         print(collinear_cols)
-        x_keeps = [elt for elt in np.array(not_collinear_cols) - len(set(data[teacher]))
-                   if elt >= 0]
-        x = x[:, x_keeps]
+        x = x_with_teacher_dummies[:, not_collinear_cols][:, len(set(data[teacher])):]
     else:
-        print('No collinear columns')
-
+        print('No collinear columns in x')
+        
     y = data[outcome].values
     n_students_per_class = class_grouped.apply(len, y, broadcast=False)
     n_classes = len(class_grouped.first_occurrences)
@@ -145,12 +143,14 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
     y_tilde = class_grouped.apply(lambda x: x - np.mean(x), y)
     x_tilde = class_grouped.apply(lambda x: x - np.mean(x, 0), x, 
                                   width = x.shape[1])
+    # TODO: check there is within-teacher variance in all x-bars?
     xx_tilde = x_tilde.T.dot(x_tilde)
     xy_tilde = x_tilde.T.dot(y_tilde)[:, 0]
     assert xy_tilde.ndim == 1
 
     x_bar = class_grouped.apply(lambda x: np.mean(x, 0), x, broadcast=False, 
                                 width=x.shape[1])
+
     y_bar = class_grouped.apply(np.mean, y, broadcast=False)
     
     teachers = data[teacher].values[class_grouped.first_occurrences]
@@ -160,16 +160,27 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
     assert teacher_grouped.already_sorted
     n_teachers = len(teacher_grouped.first_occurrences)
 
+    x_bar_bar_tmp = teacher_grouped.apply(lambda x: np.mean(x, 0), x_bar,
+                                          width=x_bar.shape[1])
+
+    # x bar may be rank deficient. If so, we will set all components of lambda
+    # corresponding to not_collin_x_bar_bar to zero.
+    collin_x_bar_bar, not_collin_x_bar_bar = find_collinear_cols(sps.csc_matrix(x_bar_bar_tmp))
+    if len(collin_x_bar_bar) > 0:
+        print('Found', len(collin_x_bar_bar), 'collinear columns in x bar bar')
+    else:
+        print('No collinear columns in x bar bar')
+
     # Vectorize and encapsulate variances
     ll_vec_func = get_ll_vec_func(n_students_per_class, n_classes, n_students, 
                                   y_tilde, x_tilde, x_bar, y_bar, 
-                                  teacher_grouped)
+                                  teacher_grouped, collin_x_bar_bar, not_collin_x_bar_bar)
 
-    def update_variances(beta, beta_plus_lambda, alpha, sigma_mu_squared, 
+    def update_variances(beta, lambda_, alpha, sigma_mu_squared, 
                          sigma_theta_squared, sigma_epsilon_squared):
 
         def get_ll_helper(params):
-            params = np.concatenate((params, beta, beta_plus_lambda, [alpha]))
+            params = np.concatenate((params, beta, lambda_, [alpha]))
             return ll_vec_func(params)
              
         def get_grad_helper(params):
@@ -177,7 +188,7 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
                      params
             grad = get_grad_variances(sigma_mu_squared, sigma_theta_squared, 
                                       sigma_epsilon_squared, beta, 
-                                      beta_plus_lambda, alpha, 1e-8, ll_vec_func)
+                                      lambda_, alpha, 1e-8, ll_vec_func)
             return grad
 
 
@@ -217,88 +228,122 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
 
         # Now do beta + lambda
         y_bar_bar = y_bar_bar_long[teacher_grouped.first_occurrences]
-        x_bar_bar = x_bar_bar_long[teacher_grouped.first_occurrences]
+
         teacher_precision_sums = h_sum_long[teacher_grouped.first_occurrences]
         # Weights aren't actually square-rooted, but do this to distribute them
         weights = 1 / np.sqrt(1 / teacher_precision_sums + sigma_mu_squared)
         assert np.all(np.isfinite(weights))
 
-        y_w = y_bar_bar * weights
+        x_bar_bar = x_bar_bar_long[teacher_grouped.first_occurrences, :]
+        y_w = (y_bar_bar - x_bar_bar.dot(beta)) * weights
         assert y_w.ndim == 1
-        stacked = np.hstack((np.ones((n_teachers, 1)), x_bar_bar))
+        stacked = np.hstack((np.ones((n_teachers, 1)), 
+                             x_bar_bar[:, not_collin_x_bar_bar]))
         x_w = stacked * weights[:, None]
-        beta_plus_lambda = np.linalg.lstsq(x_w, y_w)[0]
-        alpha, beta_plus_lambda = beta_plus_lambda[0], beta_plus_lambda[1:]
+        lambda_tmp, _, rank, _ = np.linalg.lstsq(x_w, y_w)
 
-        return beta, beta_plus_lambda, alpha, x_bar_bar
+        assert rank == x_w.shape[1]
+        alpha = lambda_tmp[0]
+        lambda_ = np.zeros(beta.shape)
+        lambda_[not_collin_x_bar_bar] = lambda_tmp[1:]
+
+        # Check for orthogonality
+        testing = False
+        if testing:
+            error = (y_bar_bar - x_bar_bar.dot(beta + lambda_) - alpha) * weights
+            print('Mean error', np.mean(error))
+            print('Error times x', np.max(np.abs(x_w.T.dot(error))))
+
+        return beta, lambda_, alpha, x_bar_bar_long
 
     sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared = \
                 np.ones(3) * np.var(y) / 6
 
-    beta_old = np.ones(x.shape[1]) * 10**9
-    beta_plus_lambda_old = beta_old.copy()
+    beta_old = np.zeros(x.shape[1])
+    lambda_old = beta_old.copy()
     sigma_mu_squared_old, sigma_theta_squared_old, sigma_epsilon_squared_old = 10, 10, 10
     max_diff = 10
 
-    while abs(max_diff) > .001:
+    i = 0
+
+    while abs(max_diff) > .001 and i < 2:
         print('\n')
-        beta, beta_plus_lambda, alpha, x_bar_bar =\
+        beta, lambda_, alpha, x_bar_bar_long =\
                 update_coefficients(sigma_mu_squared, sigma_theta_squared,
                                     sigma_epsilon_squared)
                        
-        beta_diff = beta - beta_old
-        beta_plus_lambda_diff = beta_plus_lambda - beta_plus_lambda_old
-
-
         sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared\
-            = update_variances(beta, beta_plus_lambda, alpha, sigma_mu_squared, 
+            = update_variances(beta, lambda_, alpha, sigma_mu_squared, 
                                  sigma_theta_squared, sigma_epsilon_squared)
         print('sigma mu squared', sigma_mu_squared)
 
-        max_diff = max(np.max(beta - beta_old), np.max(beta_plus_lambda - beta_plus_lambda_old),
-                       sigma_mu_squared - sigma_mu_squared_old,
-                       sigma_theta_squared - sigma_theta_squared_old,
-                       sigma_epsilon_squared - sigma_epsilon_squared_old)
+        assert np.all(beta.shape == beta_old.shape)
+        assert np.all(lambda_.shape == lambda_old.shape)
+
+        max_diff = max(np.max(np.abs(beta - beta_old)), np.max(np.abs(lambda_ - lambda_old)),
+                       abs(sigma_mu_squared - sigma_mu_squared_old),
+                       abs(sigma_theta_squared - sigma_theta_squared_old),
+                       abs(sigma_epsilon_squared - sigma_epsilon_squared_old))
         print('Max diff ', max_diff)
+        if max_diff > 10**4:
+            print('beta\n', np.max(np.abs(beta - beta_old)), '\n', np.argmax(beta - beta_old))
+            print('lambda\n', np.max(np.abs(lambda_ - lambda_old)),
+                                    '\n', np.argmax(lambda_ - lambda_old))
+            print('sigma mu squared\n', sigma_mu_squared - sigma_mu_squared_old)
+            print('sigma theta squared\n', sigma_theta_squared - sigma_theta_squared_old)
+            print('sigma epsilon squared\n', sigma_epsilon_squared - sigma_epsilon_squared_old)
 
         beta_old = beta.copy()
-        beta_plus_lambda_old = beta_plus_lambda.copy()
+        lambda_old = lambda_.copy()
         sigma_mu_squared_old = sigma_mu_squared
         sigma_theta_squared_old = sigma_theta_squared
         sigma_epsilon_squared_old = sigma_epsilon_squared
+        i += 1
+        assert np.isfinite(sigma_mu_squared)
 
-
-    beta, beta_plus_lambda, alpha, x_bar_bar =\
+    beta, lambda_, alpha, x_bar_bar_long =\
                 update_coefficients(sigma_mu_squared, sigma_theta_squared,
                                     sigma_epsilon_squared)
 
-    lambda_ = beta_plus_lambda - beta
+    x_bar_bar = x_bar_bar_long[teacher_grouped.first_occurrences, :]
     predictable_var = np.var(x_bar_bar.dot(lambda_))
     grad = get_grad_all(sigma_mu_squared, sigma_theta_squared,
-                        sigma_epsilon_squared, beta, beta_plus_lambda, alpha, 
-                        10**(-9), ll_vec_func)
+                        sigma_epsilon_squared, beta, lambda_, alpha, 
+                        10**(-9), ll_vec_func, 
+                        not_collin_x_bar_bar)
 
     hessian = get_hess_2(sigma_mu_squared, sigma_theta_squared,
-                         sigma_epsilon_squared, beta, beta_plus_lambda, alpha, 
+                         sigma_epsilon_squared, beta, lambda_, alpha, 
                          10**(-6), ll_vec_func)
 
-    asymp_var = np.linalg.inv(hessian)
-    lambda_idx = slice(-1 - len(beta), -1)
-    var_lambda = asymp_var[lambda_idx, lambda_idx]
     try:
-        bias_correction = np.sum(x_bar_bar.dot(np.linalg.cholesky(var_lambda))**2) / n_teachers
+        asymp_var = np.linalg.inv(hessian)
     except np.linalg.LinAlgError:
-        print('Hessian was not positive definite')
-        bias_correction = np.mean([row.T.dot(var_lambda).dot(row) for row in x_bar_bar])
+        print('Hessian was not invertible')
+        asymp_var = float('nan')
 
-    # print('bias correction', bias_correction)
-    total_var = sigma_mu_squared + predictable_var - bias_correction
-    # Delta method
-    grad = np.zeros(asymp_var.shape[0])
-    grad[0] = 1
-    grad[lambda_idx] = 2 * np.mean(x_bar_bar.dot(lambda_)[:, None] * (x_bar_bar - np.mean(x_bar_bar, 0)), 0)
-    total_var_se = np.sqrt(grad.T.dot(asymp_var).dot(grad))
-    
+    if not np.isfinite(asymp_var).all():
+        bias_correction = float('nan')
+        total_var = float('nan')
+        total_var_se = float('nan')
+    else:
+        lambda_idx = slice(-1 - len(beta), -1)
+        var_lambda = asymp_var[lambda_idx, lambda_idx]
+        try:
+            bias_correction = np.sum(x_bar_bar.dot(np.linalg.cholesky(var_lambda))**2) / n_teachers
+        except np.linalg.LinAlgError:
+            print('Hessian was not positive definite')
+            bias_correction = np.mean([row.T.dot(var_lambda).dot(row) for row in x_bar_bar])
+
+        # print('bias correction', bias_correction)
+        total_var = sigma_mu_squared + predictable_var - bias_correction
+        # Delta method
+        grad = np.zeros(asymp_var.shape[0])
+        grad[0] = 1
+        grad[lambda_idx] = 2 * np.mean(x_bar_bar.dot(lambda_)[:, None] * (x_bar_bar - np.mean(x_bar_bar, 0)), 0)
+        total_var_se = np.sqrt(grad.T.dot(asymp_var).dot(grad))
+
+    assert np.isfinite(sigma_mu_squared)
 
     return {'sigma mu squared': sigma_mu_squared, 
             'sigma theta squared': sigma_theta_squared, 
@@ -442,7 +487,7 @@ def calculate_va(data, outcome, teacher, covariates, class_level_vars,
         
     dense_controls = None if covariates is None else data[covariates].values
     if add_constant:
-        assert method == 'ks'
+        #assert method == 'ks'
         if dense_controls is None:
             dense_controls = np.ones((len(data), 1))
         else:
