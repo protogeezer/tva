@@ -126,11 +126,11 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
     assert class_grouped.already_sorted
 
     # Make sure everything a varies within teacher, so beta is identified
-    x_with_teacher_dummies = np.hstack((make_dummies(data[teacher], False).A, np.array(x)))
+    x_with_teacher_dummies = np.hstack((make_dummies(data[teacher], False).A, 
+                                        np.array(x)))
     collinear_cols, not_collinear_cols = find_collinear_cols(x_with_teacher_dummies)
     if len(collinear_cols) > 0:
         print('Found', len(collinear_cols), 'collinear columns in x.')
-        print(collinear_cols)
         x = x_with_teacher_dummies[:, not_collinear_cols][:, len(set(data[teacher])):]
     else:
         print('No collinear columns in x')
@@ -143,10 +143,6 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
     y_tilde = class_grouped.apply(lambda x: x - np.mean(x), y)
     x_tilde = class_grouped.apply(lambda x: x - np.mean(x, 0), x, 
                                   width = x.shape[1])
-    # TODO: check there is within-teacher variance in all x-bars?
-    xx_tilde = x_tilde.T.dot(x_tilde)
-    xy_tilde = x_tilde.T.dot(y_tilde)[:, 0]
-    assert xy_tilde.ndim == 1
 
     x_bar = class_grouped.apply(lambda x: np.mean(x, 0), x, broadcast=False, 
                                 width=x.shape[1])
@@ -161,20 +157,27 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
     n_teachers = len(teacher_grouped.first_occurrences)
 
     x_bar_bar_tmp = teacher_grouped.apply(lambda x: np.mean(x, 0), x_bar,
-                                          width=x_bar.shape[1])
-
+                                          width=x_bar.shape[1], broadcast=False)
+    x_bar_bar_tmp = np.hstack((np.ones((n_teachers, 1)), x_bar_bar_tmp))
     # x bar may be rank deficient. If so, we will set all components of lambda
     # corresponding to not_collin_x_bar_bar to zero.
     collin_x_bar_bar, not_collin_x_bar_bar = find_collinear_cols(sps.csc_matrix(x_bar_bar_tmp))
     if len(collin_x_bar_bar) > 0:
         print('Found', len(collin_x_bar_bar), 'collinear columns in x bar bar')
+        x_tilde = x_tilde[:, not_collin_x_bar_bar[1:] - 1]
+        x_bar = x_bar[:, not_collin_x_bar_bar[1:] - 1]
+
     else:
         print('No collinear columns in x bar bar')
+
+    xx_tilde = x_tilde.T.dot(x_tilde)
+    xy_tilde = x_tilde.T.dot(y_tilde)[:, 0]
+    assert xy_tilde.ndim == 1
 
     # Vectorize and encapsulate variances
     ll_vec_func = get_ll_vec_func(n_students_per_class, n_classes, n_students, 
                                   y_tilde, x_tilde, x_bar, y_bar, 
-                                  teacher_grouped, collin_x_bar_bar, not_collin_x_bar_bar)
+                                  teacher_grouped)
 
     def update_variances(beta, lambda_, alpha, sigma_mu_squared, 
                          sigma_theta_squared, sigma_epsilon_squared):
@@ -198,7 +201,7 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
         result = minimize(get_ll_helper, [sigma_mu_squared, sigma_theta_squared,
                                            sigma_epsilon_squared], 
                           jac=get_grad_helper, method='L-BFGS-B',
-                          bounds=[(1e-5, np.var(y)), (1e-5, np.var(y)), (1e-5, np.var(y))],
+                          bounds=[(1e-7, np.var(y)), (1e-7, np.var(y)), (1e-7, np.var(y))],
                           options={'disp': False, 'ftol': 1e-14})
                     #constraints={'type': 'ineq', 'fun': lambda x: x})
         sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared = result['x']
@@ -235,17 +238,19 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
         assert np.all(np.isfinite(weights))
 
         x_bar_bar = x_bar_bar_long[teacher_grouped.first_occurrences, :]
+        assert x_bar_bar.shape[1] == x_bar.shape[1]
+        assert x_bar_bar.shape[1] == x_tilde.shape[1]
         y_w = (y_bar_bar - x_bar_bar.dot(beta)) * weights
         assert y_w.ndim == 1
-        stacked = np.hstack((np.ones((n_teachers, 1)), 
-                             x_bar_bar[:, not_collin_x_bar_bar]))
+        stacked = np.hstack((np.ones((n_teachers, 1)), x_bar_bar))
         x_w = stacked * weights[:, None]
         lambda_tmp, _, rank, _ = np.linalg.lstsq(x_w, y_w)
 
-        assert rank == x_w.shape[1]
+        if rank != x_w.shape[1]:
+            warnings.warn('x_w is rank deficient')
+
         alpha = lambda_tmp[0]
-        lambda_ = np.zeros(beta.shape)
-        lambda_[not_collin_x_bar_bar] = lambda_tmp[1:]
+        lambda_ = lambda_tmp[1:]
 
         # Check for orthogonality
         testing = False
@@ -259,14 +264,14 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
     sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared = \
                 np.ones(3) * np.var(y) / 6
 
-    beta_old = np.zeros(x.shape[1])
+    beta_old = np.zeros(x_bar.shape[1])
     lambda_old = beta_old.copy()
     sigma_mu_squared_old, sigma_theta_squared_old, sigma_epsilon_squared_old = 10, 10, 10
     max_diff = 10
 
     i = 0
 
-    while abs(max_diff) > .001 and i < 2:
+    while abs(max_diff) > .001 and i < 15:
         print('\n')
         beta, lambda_, alpha, x_bar_bar_long =\
                 update_coefficients(sigma_mu_squared, sigma_theta_squared,
@@ -275,7 +280,6 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
         sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared\
             = update_variances(beta, lambda_, alpha, sigma_mu_squared, 
                                  sigma_theta_squared, sigma_epsilon_squared)
-        print('sigma mu squared', sigma_mu_squared)
 
         assert np.all(beta.shape == beta_old.shape)
         assert np.all(lambda_.shape == lambda_old.shape)
@@ -284,7 +288,6 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
                        abs(sigma_mu_squared - sigma_mu_squared_old),
                        abs(sigma_theta_squared - sigma_theta_squared_old),
                        abs(sigma_epsilon_squared - sigma_epsilon_squared_old))
-        print('Max diff ', max_diff)
         if max_diff > 10**4:
             print('beta\n', np.max(np.abs(beta - beta_old)), '\n', np.argmax(beta - beta_old))
             print('lambda\n', np.max(np.abs(lambda_ - lambda_old)),
@@ -309,12 +312,11 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
     predictable_var = np.var(x_bar_bar.dot(lambda_))
     grad = get_grad_all(sigma_mu_squared, sigma_theta_squared,
                         sigma_epsilon_squared, beta, lambda_, alpha, 
-                        10**(-9), ll_vec_func, 
-                        not_collin_x_bar_bar)
+                        10**(-9), ll_vec_func)
 
     hessian = get_hess_2(sigma_mu_squared, sigma_theta_squared,
                          sigma_epsilon_squared, beta, lambda_, alpha, 
-                         10**(-6), ll_vec_func)
+                         10**(-9), ll_vec_func)
 
     try:
         asymp_var = np.linalg.inv(hessian)
@@ -329,15 +331,24 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
     else:
         lambda_idx = slice(-1 - len(beta), -1)
         var_lambda = asymp_var[lambda_idx, lambda_idx]
+
+        #print('var lambda', var_lambda)
+        tmp = x_bar_bar - np.mean(x_bar_bar, 0)
         try:
-            bias_correction = np.sum(x_bar_bar.dot(np.linalg.cholesky(var_lambda))**2) / n_teachers
+            bias_correction_2 = np.sum(x_bar_bar.dot(np.linalg.cholesky(var_lambda))**2) / n_teachers
+            bias_correction = np.sum(tmp.dot(np.linalg.cholesky(var_lambda))**2) / n_teachers
         except np.linalg.LinAlgError:
             print('Hessian was not positive definite')
-            bias_correction = np.mean([row.T.dot(var_lambda).dot(row) for row in x_bar_bar])
+            bias_correction_2 = np.mean([row.T.dot(var_lambda).dot(row) 
+                                       for row in x_bar_bar])
+            bias_correction = np.mean([row.T.dot(var_lambda).dot(row)
+                                         for row in tmp])
 
         # print('bias correction', bias_correction)
         total_var = sigma_mu_squared + predictable_var - bias_correction
-        # Delta method
+        print('total with bias correction 1', total_var)
+        print('with 2', sigma_mu_squared + predictable_var - bias_correction_2)
+        # Delta method: lambda variance to predictable var variance
         grad = np.zeros(asymp_var.shape[0])
         grad[0] = 1
         grad[lambda_idx] = 2 * np.mean(x_bar_bar.dot(lambda_)[:, None] * (x_bar_bar - np.mean(x_bar_bar, 0)), 0)
