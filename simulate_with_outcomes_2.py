@@ -1,25 +1,18 @@
 import numpy as np
 import pandas as pd
-from copy import copy
-from va_functions import Text, remove_duplicates, normalize
+from va_functions import Text, normalize, remove_duplicates
 from scipy.stats import burr
-    
-def subset_shuffle(an_array, shuffle_fraction):
-    assert(type(an_array) == np.ndarray)
-    # Boolean indexing
-    shuffle_indices = np.random.rand(len(an_array)) < shuffle_fraction     
-    shuffle_part = an_array[shuffle_indices]
-    np.random.shuffle(shuffle_part)
-    an_array[shuffle_indices] = shuffle_part
-    return an_array
-    
-#def reassign(state_df, time_var, district, switch_fraction, seed):
-def reassign(state_df, time_var, switch_fraction):
+from config import *
+import sys
+sys.path.append(hdfe_dir)
+from hdfe import Groupby
+       
+def reassign(state_df, time_var, switch_frequency):
     times = sorted(set(state_df[time_var]))
-    last_df = state_df[state_df[time_var] == times[0]]
+    last_df = state_df[state_df[time_var] == np.min(times)]
     last_assignments_from_orig = dict(zip(last_df['distcode'], last_df['person']))
     last_assignments_from_sim = dict(zip(last_df['distcode'], last_df['person']))
-    last_districts = set(last_df['distcode'])
+    last_districts = remove_duplicates(last_df['distcode'])
     last_district_from_sim = dict(zip(last_df['person'], last_df['distcode']))
     
     text = Text(state_df['state'].values[0], last_assignments_from_orig)
@@ -27,76 +20,72 @@ def reassign(state_df, time_var, switch_fraction):
     for t in times[1:]:
         indices = pd.Series(state_df[time_var] == t)        
         current_df = state_df[indices]
-            
-        current_people = set(current_df['person'])
-        # someone is duplicated; drop duplicates
-        if len(current_people) != len(current_df):
-            _, ind = np.unique(current_df['person'].values, return_index = True)
-            current_df = current_df.iloc[ind]
-        
-        current_districts = set(current_df['distcode'])
-        assert len(current_people) == len(current_df)
+        current_districts = remove_duplicates(current_df['distcode'])
+        assert set(current_districts) == set(current_df['distcode'])
         assert len(current_districts) == len(current_df)
         current_assignments_from_orig = dict(zip(current_df['distcode'],
                                                  current_df['person']))
-        text.append(t, 'original assignments', current_assignments_from_orig)
         """
         Find people who are in the state in the current period and last period,
         AND are assigned to the same district in both period. 
         Find the districts they go with.
         """
-        districts_with_continuing_people =\
-               [dist for dist in current_districts & last_districts
-               if last_assignments_from_orig[dist] == current_assignments_from_orig[dist]]
+        districts_with_continuing_people = \
+                [dist for dist in current_districts 
+                        if dist in last_districts and
+                       last_assignments_from_orig[dist] == current_assignments_from_orig[dist]]
+        assert len(districts_with_continuing_people) == len(set(districts_with_continuing_people))
+        assert set(districts_with_continuing_people).issubset(set(current_df['distcode']))
         people_continuing_in_district = [last_assignments_from_orig[dist]
                                          for dist in districts_with_continuing_people]
+        assert len(people_continuing_in_district) == len(set(people_continuing_in_district))
+        assert set(people_continuing_in_district).issubset(set(current_df['person']))
        
         continuation_people_districts = [last_district_from_sim[p] 
                                          for p in people_continuing_in_district
-                                 if last_district_from_sim[p] in current_districts]
-        text.append('people continuing in district', people_continuing_in_district)
-                          
-        other_people = current_people - set(people_continuing_in_district)
-        assert(other_people | set(people_continuing_in_district) == current_people)
-        text.append('people not continuing in district:', other_people)
-        other_districts = current_districts - set(continuation_people_districts)
-        assert(other_districts | set(continuation_people_districts) == current_districts)   
-        text.append('districts with continuing people', districts_with_continuing_people)
-        text.append('other districts', other_districts)
-        """ 
-        Create new assignments:
-            - People who continue in the same district do so
-            - Everyone else is randomly assigned to one of the other districts
-        """
-        other_people = list(other_people)
-        
-        np.random.shuffle(other_people)
-        person_assignments = people_continuing_in_district + list(other_people)
-        district_assignments = continuation_people_districts + list(other_districts) 
+                                         if last_district_from_sim[p] in current_districts]
+        assert len(continuation_people_districts) == len(set(continuation_people_districts))
+        assert set(continuation_people_districts).issubset(set(current_df['distcode']))
+       
+        other_people = [p for p in remove_duplicates(current_df['person'])
+                        if p not in people_continuing_in_district]
+        assert set(other_people) | set(people_continuing_in_district) == set(current_df['person'])
+        if t % switch_frequency == 0:
+            """ 
+            Create new assignments:
+                - People who continue in the same district do so
+                - Everyone else is randomly assigned to one of the other districts
+            """
+            np.random.shuffle(other_people)
 
-        assert(set(person_assignments) == current_people)
-#       Randomly switch some people
-        new_person_assignments = subset_shuffle(np.array(person_assignments), 
-                                                switch_fraction)
-        assert(set(new_person_assignments) == current_people)
-        assert(set(district_assignments) == current_districts)
-        assert(len(district_assignments) == len(new_person_assignments))
-        assignments = dict(zip(district_assignments, new_person_assignments))
+        person_assignments = people_continuing_in_district + other_people
+        assert set(person_assignments) == set(current_df['person'])
+        other_districts = [d for d in current_districts
+                           if d not in continuation_people_districts]
+        assert len(other_districts) == len(set(other_districts))
+        assert set(other_districts).issubset(set(current_districts))
+        district_assignments = continuation_people_districts + other_districts
+        assert set(district_assignments) == set(current_districts)
+        assert len(district_assignments) == len(person_assignments)
+
+        assignments = dict(zip(district_assignments, person_assignments))
         text.append('simulated assignments', assignments)
         # Update data with new changes
-        state_df.loc[indices, 'person'] =\
-                            [assignments.get(dist, 'NaN') 
-                             for dist in state_df.loc[indices, 'distcode']]
-        last_assignments_from_orig = current_assignments_from_orig
-        last_district_from_sim = dict(zip(new_person_assignments, district_assignments))
-        last_districts = current_districts
+        state_df.loc[indices, 'person'] = state_df['distcode'].map(assignments)
+        last_assignments_from_orig = current_assignments_from_orig.copy()
+        last_district_from_sim = dict(zip(person_assignments, district_assignments))
+        last_districts = current_districts.copy()
 
     return state_df
     
-def simulate(df, seed_increment, switch_fraction, time_var):
+def simulate(df, seed_increment, switch_frequency, time_var):
     np.random.seed(seed_increment)
     print(seed_increment)
-    df = df.groupby('state').apply(lambda x: reassign(x, time_var, switch_fraction))
+    no_duplicates = df.set_index(['state', 'month_id', 'person']).index.is_unique
+    if not no_duplicates:
+        raise ValueError('Some months, the same person was in a state twice')
+    grouped = df.groupby('state')
+    df = grouped.apply(lambda x: reassign(x, time_var, switch_frequency))
     people = set(df['person'])
     person_effect = dict(zip(people, burr.rvs(6, 10**5, size = len(people))))
     df['person_effect'] = df['person'].map(person_effect)
