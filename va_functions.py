@@ -7,27 +7,34 @@ import sys
 from config_tva import *
 sys.path += [hdfe_dir]
 from hdfe import Groupby
+import warnings
 
-
-def get_ll(sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared,
+def get_ll_grad(log_sigma_mu_squared, log_sigma_theta_squared, log_sigma_epsilon_squared,
            n_students_per_class, n_classes, n_students, y_tilde, x_tilde,
-           x_bar, y_bar, beta, lambda_, alpha, teacher_grouped,
+           x_bar, y_bar, beta, lambda_, alpha, teacher_grouped, get_grad=False,
            return_means=False, h=None, h_sum=None, y_bar_tilde=None, 
-           x_bar_tilde=None, y_bar_bar=None, x_bar_bar=None):
-    assert sigma_mu_squared > 0
-    assert np.isscalar(sigma_mu_squared)
-    assert np.isscalar(sigma_theta_squared)
-    assert np.isscalar(sigma_epsilon_squared)
+           x_bar_tilde=None, y_bar_bar=None, x_bar_bar=None, start=0, variances_only=False):
+    assert np.isscalar(log_sigma_mu_squared)
+    assert np.isscalar(log_sigma_theta_squared)
+    assert np.isscalar(log_sigma_epsilon_squared)
     assert np.isscalar(alpha)
     assert np.isscalar(n_students)
     assert n_students_per_class.shape[0] == n_classes
     assert y_tilde.shape[0] == n_students
 
+    sigma_mu_squared = np.exp(log_sigma_mu_squared)
+    sigma_theta_squared = np.exp(log_sigma_theta_squared)
+    sigma_epsilon_squared = np.exp(log_sigma_epsilon_squared)
+
 
     if h is None:
         h = 1 / (sigma_theta_squared + sigma_epsilon_squared / n_students_per_class)
+        assert np.all(h > 0)
+    else:
+        assert np.all(h > 0)
     if y_bar_tilde is None or x_bar_tilde is None or h_sum is None:
         h_sum_long = teacher_grouped.apply(np.sum, h)[:, 0]
+        assert np.min(h_sum_long) >= np.min(h)
         precision_weights = h / h_sum_long
         y_bar_bar_long = teacher_grouped.apply(np.sum, 
                                               precision_weights * y_bar)[:, 0]
@@ -40,28 +47,74 @@ def get_ll(sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared,
         x_bar_tilde = x_bar - x_bar_bar_long
 
         h_sum = h_sum_long[teacher_grouped.first_occurrences]
+        assert np.min(h_sum) == np.min(h_sum_long)
+    
+    assert np.all(h_sum > 0)
+
     if y_bar_bar is None or x_bar_bar is None:
         y_bar_bar = y_bar_bar_long[teacher_grouped.first_occurrences]
         x_bar_bar = x_bar_bar_long[teacher_grouped.first_occurrences, :]
 
-    # # Check for orthogonality
-    # error = y_bar_bar - x_bar_bar.dot(beta + lambda_) - alpha
-    # print('mean error', np.mean(error))
-    # print('error times x', np.max(np.abs(x_bar_bar.T.dot(error))))
+    one_over_h_sum = 1 / h_sum
+    bar_bar_err = y_bar_bar - x_bar_bar.dot(beta + lambda_) - alpha
 
-    ll = (n_classes - n_students) * np.log(sigma_epsilon_squared)\
+    ll = (n_classes - n_students) * log_sigma_epsilon_squared\
          + np.sum(np.log(h)) - np.sum(np.log(h_sum))\
-         - np.sum(np.log(sigma_mu_squared + 1 / h_sum))\
+         - np.sum(np.log(sigma_mu_squared + one_over_h_sum))\
          - np.sum((y_tilde[:, 0] - x_tilde.dot(beta))**2) / sigma_epsilon_squared\
          - h.dot((y_bar_tilde - x_bar_tilde.dot(beta))**2)\
-         - np.dot((y_bar_bar - x_bar_bar.dot(beta + lambda_) - alpha)**2,
-                  1 / (sigma_mu_squared + 1 / h_sum))
-
+         - np.dot(bar_bar_err**2, 1 / (sigma_mu_squared + one_over_h_sum))
+    ll /= -2
     assert np.isfinite(ll)
-    if return_means:
-        return -1 * ll / 2, h, h_sum, y_tilde, x_tilde, y_bar_tilde, x_bar_tilde, y_bar_bar, x_bar_bar
-    else:
-        return -1 * ll / 2
+    if not get_grad:
+        if return_means:
+            return ll, h, h_sum, y_tilde, x_tilde, y_bar_tilde, x_bar_tilde,\
+                    y_bar_bar, x_bar_bar
+        return ll
+
+    gradient = [None, None, None]
+    if start == 0:
+        tmp = sigma_mu_squared + 1 / h_sum
+        grad_s_mu = np.dot(bar_bar_err**2, 1 / tmp**2) - np.sum(1 / tmp)
+        grad_s_mu *= -sigma_mu_squared / 2
+        gradient[0] = grad_s_mu
+
+    if start <= 2:
+        first = 1 / h - (y_bar_tilde - x_bar_tilde.dot(beta))**2
+        second = -one_over_h_sum + one_over_h_sum**2 / (sigma_mu_squared + one_over_h_sum)\
+                - (one_over_h_sum / (sigma_mu_squared + one_over_h_sum))**2 * bar_bar_err**2
+
+        d_h_d_log_e = -h**2 * sigma_epsilon_squared / n_students_per_class
+        d_e_sum = teacher_grouped.apply(np.sum, d_h_d_log_e, broadcast=False)
+
+        grad_s_eps = n_classes - n_students + d_h_d_log_e.dot(first)
+        grad_s_eps += d_e_sum.dot(second)
+        grad_s_eps += np.sum((y_tilde[:, 0] - x_tilde.dot(beta))**2) / sigma_epsilon_squared
+
+        gradient[2] = grad_s_eps / -2
+ 
+    # Get gradient for log sigma theta squared
+    if start <= 1:
+        d_h_d_log_t = -h**2 * sigma_theta_squared
+        d_h_sum = teacher_grouped.apply(np.sum, d_h_d_log_t, broadcast=False)
+
+        grad_s_theta = d_h_d_log_t.dot(first)
+        grad_s_theta += d_h_sum.dot(second)
+        grad_s_theta /= -2
+        gradient[1] = grad_s_theta
+       
+    if variances_only:
+        return ll, np.array(gradient)
+    grad_beta = -x_tilde.T.dot(y_tilde[:, 0] - x_tilde.dot(beta)) / np.exp(log_sigma_epsilon_squared)\
+                - (h[:, None] * x_bar_tilde).T.dot(y_bar_tilde - x_bar_tilde.dot(beta))
+
+    w = 1 / (np.exp(log_sigma_mu_squared) + 1 / h_sum[:, None])
+    grad_lambda = -(w * x_bar_bar).T.dot(bar_bar_err)
+    grad_alpha = -bar_bar_err.dot(w)
+
+    gradient = np.concatenate((gradient, grad_beta, grad_lambda, grad_alpha))
+
+    return ll, gradient
 
 
 def get_ll_vec_func(n_students_per_class, n_classes, n_students, y_tilde,
@@ -71,133 +124,58 @@ def get_ll_vec_func(n_students_per_class, n_classes, n_students, y_tilde,
     beta, lambda_, and alpha
     """
     k = x_bar.shape[1] 
-    def f(vec, return_means=False, h=None, h_sum=None, x_bar_tilde=None,
-            y_bar_tilde=None, y_bar_bar=None, x_bar_bar=None):
-        assert vec[0] > 0
-        return get_ll(vec[0], vec[1], vec[2], n_students_per_class, n_classes,
-                      n_students, y_tilde, x_tilde, x_bar, y_bar, 
-                      vec[3:3 + k], vec[3+k: 3 + 2 * k], vec[-1], 
-                      teacher_grouped, 
-                      return_means,  h, h_sum,  y_bar_tilde=y_bar_tilde,
-                      x_bar_tilde=x_bar_tilde, y_bar_bar=y_bar_bar, x_bar_bar=x_bar_bar)
+    def f(vec, get_grad=False, return_means=False, h=None, h_sum=None, 
+          x_bar_tilde=None, y_bar_tilde=None, y_bar_bar=None, x_bar_bar=None,
+          start=0, variances_only=False):
+        return get_ll_grad(vec[0], vec[1], vec[2], n_students_per_class, 
+                           n_classes, n_students, y_tilde, x_tilde, x_bar, 
+                           y_bar, vec[3:3 + k], vec[3+k: 3 + 2 * k], vec[-1], 
+                           teacher_grouped, get_grad, return_means, h, h_sum, 
+                           y_bar_tilde=y_bar_tilde, x_bar_tilde=x_bar_tilde, 
+                           y_bar_bar=y_bar_bar, x_bar_bar=x_bar_bar, 
+                           start=start, variances_only=variances_only)
     return f
 
 
-# TODO: speed this up a lot by pre-computing y_bar_bar, etc.
-def get_grad_variances(sigma_mu_squared, sigma_theta_squared, 
-                       sigma_epsilon_squared, beta, lambda_, alpha, 
-                       epsilon, ll_vec_func):
-    """
-    ll_vec_func should have been generated by get_ll_vec_func
-    """
-    # print('inside gradient')
-    # print(sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared)
-    for elt in [sigma_mu_squared, sigma_theta_squared,
-                sigma_epsilon_squared, alpha, epsilon]:
-        assert np.isscalar(elt)
-    vec = np.concatenate(([sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared],
-                          beta, lambda_, [alpha]))
-
-    eye = np.eye(len(vec))
-
-    gradient = [(ll_vec_func(vec + epsilon * eye[:, i]) - ll_vec_func(vec - epsilon * eye[:, i]))/(2 * epsilon)
-                for i in range(3)]
-    gradient = np.array(gradient)
-    assert np.all(np.isfinite(gradient))
-    return gradient
-
-
-def get_grad_all(sigma_mu_squared, sigma_theta_squared, 
-                 sigma_epsilon_squared, beta, lambda_, alpha, 
-                 epsilon, ll_vec_func,
-                 start=0, h=None, h_sum=None,
-                 x_bar_tilde=None, y_bar_tilde=None, y_bar_bar=None, 
-                 x_bar_bar=None, x_tilde=None, y_tilde=None):
-    """
-    ll_vec_func should have been generated by get_ll_vec_func
-    """
-    # print('inside gradient')
-    # print(sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared)
-    for elt in [sigma_mu_squared, sigma_theta_squared,
-                sigma_epsilon_squared, alpha, epsilon]:
-        assert np.isscalar(elt)
-    vec = np.concatenate(([sigma_mu_squared, sigma_theta_squared, 
-                           sigma_epsilon_squared], 
-                          beta, lambda_, [alpha]))
-
-    eye = np.eye(len(vec))
-
-    gradient = [None, None, None]
-    for i in range(3):
-        if start <= i:
-            gradient[i] = (ll_vec_func(vec + epsilon * eye[:, i]) \
-                         - ll_vec_func(vec - epsilon * eye[:, i]))/(2 * epsilon)
-
-    if h is None:
-        _, h, h_sum, y_tilde, x_tilde, y_bar_tilde, x_bar_tilde, y_bar_bar, x_bar_bar = ll_vec_func(vec, True)
-
-    grad_beta = -x_tilde.T.dot(y_tilde[:, 0] - x_tilde.dot(beta)) / sigma_epsilon_squared\
-                - (h[:, None] * x_bar_tilde).T.dot(y_bar_tilde - x_bar_tilde.dot(beta))
-
-    err = y_bar_bar - x_bar_bar.dot(beta + lambda_) - alpha
-    w = 1 / (sigma_mu_squared + 1 / h_sum[:, None])
-    grad_lambda = -(w * x_bar_bar).T.dot(err)
-    grad_alpha = -err.dot(w)
-
-    gradient = np.concatenate((gradient, grad_beta, grad_lambda, grad_alpha))
-    return gradient
-
-
-def get_grad_vec(vec, epsilon, ll_vec_func, start=0, h=None, h_sum=None,
-                 x_bar_tilde=None, y_bar_tilde=None, y_bar_bar=None, 
-                 x_bar_bar=None, x_tilde=None, y_tilde=None):
-
-    sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared = vec[:3]
-    len_beta = int((len(vec) - 4) / 2)
-    beta = vec[3:3 + len_beta]
-    lambda_ = vec[3 + len_beta: 3 + 2 * len_beta]
-    alpha = vec[-1]
-    return get_grad_all(sigma_mu_squared, sigma_theta_squared, 
-                 sigma_epsilon_squared, beta, lambda_, alpha, 
-                 epsilon, ll_vec_func, start, h, h_sum, x_bar_tilde=x_bar_tilde,
-                 y_bar_tilde=y_bar_tilde, y_bar_bar=y_bar_bar, x_bar_bar=x_bar_bar, x_tilde=x_tilde, y_tilde=y_tilde)
- 
-
-def get_hess_2(sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared, 
-               beta, lambda_, alpha, epsilon, ll_vec_func):
-    for elt in [sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared, 
+def get_hess(log_sigma_mu_squared, log_sigma_theta_squared, log_sigma_epsilon_squared, 
+             beta, lambda_, alpha, epsilon, ll_vec_func, n_students_per_class):
+    for elt in [log_sigma_mu_squared, log_sigma_theta_squared, log_sigma_epsilon_squared, 
                 alpha, epsilon]:
         assert np.isscalar(elt)
 
-    vec = np.concatenate(([sigma_mu_squared, sigma_theta_squared, 
-                           sigma_epsilon_squared], 
+    vec = np.concatenate(([log_sigma_mu_squared, log_sigma_theta_squared, 
+                           log_sigma_epsilon_squared], 
                           beta, lambda_, [alpha]))
     eye = np.eye(len(vec))
     hessian = np.zeros((len(vec), len(vec)))
-    
+     
     ans = ll_vec_func(vec, return_means=True)
-    _, h, h_sum, y_tilde, x_tilde, y_bar_tilde, x_bar_tilde, y_bar_bar, x_bar_bar = ans
+    ll, h, h_sum, y_tilde, x_tilde, y_bar_tilde, x_bar_tilde, y_bar_bar, x_bar_bar = ans
+    assert np.all(h > 0)
+    assert np.all(h_sum > 0)
+    assert np.max(h) <= np.max(h_sum)
 
     for i in range(len(vec)):
+        # when updating variances, need to recalculate h, h_sum, etc.
         if i < 3:
-            upper = get_grad_vec(vec + eye[:, i] * epsilon, epsilon, 
-                                 ll_vec_func, start=i)
-            lower = get_grad_vec(vec - eye[:, i] * epsilon, epsilon, 
-                                 ll_vec_func, start=i)
+            ll_up, upper = ll_vec_func(vec + eye[:, i] * epsilon, start=i, get_grad=True)
+            ll_lo, lower = ll_vec_func(vec - eye[:, i] * epsilon, start=i, get_grad=True)
+            # Since we should be at a minimum, the gradient should be positive
+            # to the right and negative to the left
+            if ll_up > ll or ll_lo > ll:
+                warnings.warn('Found a lower ll; you may not be at an optimum')
+            if upper[i] < 0 or lower[i] > 0 or (upper[i] - lower[i] < 0):
+                warnings.warn('Gradient indicates you may not be at an optimum')
+        # When updating other parameters, don't need to recalculate stuff
         else:
-            upper = get_grad_vec(vec + eye[:, i] * epsilon, epsilon, 
-                                 ll_vec_func, start=i, h=h, h_sum=h_sum, 
-                                 y_bar_tilde=y_bar_tilde, 
+            _, upper = ll_vec_func(vec + eye[:,i] * epsilon, start=i, get_grad=True,
+                                 h=h, h_sum=h_sum, y_bar_tilde=y_bar_tilde, 
                                  x_bar_tilde=x_bar_tilde, y_bar_bar=y_bar_bar, 
-                                 x_bar_bar=x_bar_bar, x_tilde=x_tilde, 
-                                 y_tilde=y_tilde)
-            lower = get_grad_vec(vec - eye[:, i] * epsilon, epsilon, 
-                                 ll_vec_func, start=i, h=h, h_sum=h_sum, 
-                                 y_bar_tilde=y_bar_tilde,
-                                 x_bar_tilde=x_bar_tilde, y_bar_bar=y_bar_bar,
-                                 x_bar_bar=x_bar_bar, x_tilde=x_tilde, 
-                                 y_tilde=y_tilde)
-
+                                 x_bar_bar=x_bar_bar)
+            _, lower = ll_vec_func(vec - eye[:,i] * epsilon, start=i, get_grad=True,
+                                 h=h, h_sum=h_sum, y_bar_tilde=y_bar_tilde, 
+                                 x_bar_tilde=x_bar_tilde, y_bar_bar=y_bar_bar, 
+                                 x_bar_bar=x_bar_bar)
         hess = (upper[i:] - lower[i:]) / (2 * epsilon)
         hessian[i, i:] = hess
         hessian[i:, i] = hess
