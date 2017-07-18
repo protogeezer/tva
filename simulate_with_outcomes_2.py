@@ -7,7 +7,7 @@ import sys
 sys.path.append(hdfe_dir)
 from hdfe import Groupby
        
-def reassign(state_df, time_var, switch_frequency):
+def reassign(state_df, time_var):
     times = sorted(set(state_df[time_var]))
     last_df = state_df[state_df[time_var] == np.min(times)]
     last_assignments_from_orig = dict(zip(last_df['distcode'], last_df['person']))
@@ -50,13 +50,12 @@ def reassign(state_df, time_var, switch_frequency):
         other_people = [p for p in remove_duplicates(current_df['person'])
                         if p not in people_continuing_in_district]
         assert set(other_people) | set(people_continuing_in_district) == set(current_df['person'])
-        if t % switch_frequency == 0:
-            """ 
-            Create new assignments:
-                - People who continue in the same district do so
-                - Everyone else is randomly assigned to one of the other districts
-            """
-            np.random.shuffle(other_people)
+        """ 
+        Create new assignments:
+            - People who continue in the same district do so
+            - Everyone else is randomly assigned to one of the other districts
+        """
+        np.random.shuffle(other_people)
 
         person_assignments = people_continuing_in_district + other_people
         assert set(person_assignments) == set(current_df['person'])
@@ -85,7 +84,7 @@ def simulate(df, seed_increment, switch_frequency, time_var):
     if not no_duplicates:
         raise ValueError('Some months, the same person was in a state twice')
     grouped = df.groupby('state')
-    df = grouped.apply(lambda x: reassign(x, time_var, switch_frequency))
+    df = grouped.apply(lambda x: reassign(x, time_var))
     people = set(df['person'])
     person_effect = dict(zip(people, burr.rvs(6, 10**5, size = len(people))))
     df['person_effect'] = df['person'].map(person_effect)
