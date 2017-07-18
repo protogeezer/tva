@@ -12,9 +12,6 @@ from hdfe import Groupby, estimate, make_dummies
 from multicollinearity import find_collinear_cols
 from variance_ls_numopt import get_g_and_tau
 from scipy.optimize import minimize
-from variance_ls_numopt import newton
-import ad
-from ad.admath import *
 
 
 # A should be a vector, rest are matrices
@@ -93,10 +90,14 @@ def fk_alg(data, outcome, teacher, dense_controls, class_level_vars,
     #mu_preliminary -= np.mean(mu_preliminary)
     b_hat = b[n_teachers:]
 
-    sigma_mu_squared, beta, gamma = get_g_and_tau(mu_preliminary, b_hat, V, teacher_controls,
-                                            starting_guess = 0)
+    try:
+        sigma_mu_squared, beta, gamma = get_g_and_tau(mu_preliminary, b_hat, V, teacher_controls,
+                                                starting_guess = 0)
+    except np.linalg.LinAlgError:
+        return {'sigma mu squared': 0, 'beta': None, 'gamma': None}
     if moments_only:
-        return sigma_mu_squared, beta, gamma
+        return {'sigma mu squared': sigma_mu_squared, 'beta': beta, 
+                'gamma': gamma}
     ## TODO: this may have already been computed in 'estimate'; fix if time-consuming
     inv_V = np.linalg.inv(V)
 
@@ -104,7 +105,8 @@ def fk_alg(data, outcome, teacher, dense_controls, class_level_vars,
     tmp_1 = inv_V[:n_teachers, :n_teachers] + np.eye(n_teachers) / sigma_mu_squared
     tmp_2 = inv_V[:n_teachers, :n_teachers].dot(mu_preliminary - epsilon) + teacher_controls.dot(gamma) / sigma_mu_squared
     ans = np.linalg.lstsq(tmp_1, tmp_2)[0]
-    return ans, sigma_mu_squared
+    return {'individual estimates': ans, 'sigma mu squared': sigma_mu_squared,
+            'beta': beta, 'gamma': gamma}
 
 
 def mle(data, outcome, teacher, dense_controls, categorical_controls,
@@ -128,12 +130,10 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
     # Make sure everything a varies within teacher, so beta is identified
     x_with_teacher_dummies = np.hstack((make_dummies(data[teacher], False).A, 
                                         np.array(x)))
-    collinear_cols, not_collinear_cols = find_collinear_cols(x_with_teacher_dummies)
+    collinear_cols, not_collinear_cols = find_collinear_cols(x_with_teacher_dummies, tol=.01)
     if len(collinear_cols) > 0:
         print('Found', len(collinear_cols), 'collinear columns in x.')
         x = x_with_teacher_dummies[:, not_collinear_cols][:, len(set(data[teacher])):]
-    else:
-        print('No collinear columns in x')
         
     y = data[outcome].values
     n_students_per_class = class_grouped.apply(len, y, broadcast=False)
@@ -167,9 +167,6 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
         x_tilde = x_tilde[:, not_collin_x_bar_bar[1:] - 1]
         x_bar = x_bar[:, not_collin_x_bar_bar[1:] - 1]
 
-    else:
-        print('No collinear columns in x bar bar')
-
     xx_tilde = x_tilde.T.dot(x_tilde)
     xy_tilde = x_tilde.T.dot(y_tilde)[:, 0]
     assert xy_tilde.ndim == 1
@@ -179,34 +176,37 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
                                   y_tilde, x_tilde, x_bar, y_bar, 
                                   teacher_grouped)
 
-    def update_variances(beta, lambda_, alpha, sigma_mu_squared, 
-                         sigma_theta_squared, sigma_epsilon_squared):
+    def update_variances(beta, lambda_, alpha, log_sigma_mu_squared, 
+                         log_sigma_theta_squared, log_sigma_epsilon_squared):
 
         def get_ll_helper(params):
             params = np.concatenate((params, beta, lambda_, [alpha]))
             return ll_vec_func(params)
              
         def get_grad_helper(params):
-            sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared = \
+            log_sigma_mu_squared, log_sigma_theta_squared, log_sigma_epsilon_squared = \
                      params
-            grad = get_grad_variances(sigma_mu_squared, sigma_theta_squared, 
-                                      sigma_epsilon_squared, beta, 
-                                      lambda_, alpha, 1e-8, ll_vec_func)
-            return grad
+            _, grad = get_ll_grad(log_sigma_mu_squared, log_sigma_theta_squared,
+                                  log_sigma_epsilon_squared,
+                                  n_students_per_class, n_classes, n_students,
+                                  y_tilde, x_tilde, x_bar, y_bar, beta,
+                                  lambda_, alpha, teacher_grouped,
+                                  variances_only=True, get_grad=True)
 
+            return grad
 
         # bad overshooting -> bad hessian approximation -> lower maxcor needed
         # but why does the gradient get so huge?
         # Probably fixed with upper bound.
-        result = minimize(get_ll_helper, [sigma_mu_squared, sigma_theta_squared,
-                                           sigma_epsilon_squared], 
+        result = minimize(get_ll_helper, 
+                          [log_sigma_mu_squared, log_sigma_theta_squared,
+                                           log_sigma_epsilon_squared], 
                           jac=get_grad_helper, method='L-BFGS-B',
-                          bounds=[(1e-7, np.var(y)), (1e-7, np.var(y)), (1e-7, np.var(y))],
-                          options={'disp': False, 'ftol': 1e-14})
-                    #constraints={'type': 'ineq', 'fun': lambda x: x})
-        sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared = result['x']
+                          bounds=[(-np.inf, np.inf), (-np.inf, np.inf), (-50, 50)],
+                          options={'disp': False, 'ftol': 1e-14, 'gtol': 1e-7})
+        log_sigma_mu_squared, log_sigma_theta_squared, log_sigma_epsilon_squared = result['x']
 
-        return sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared
+        return log_sigma_mu_squared, log_sigma_theta_squared, log_sigma_epsilon_squared, result['jac']
 
 
     def update_coefficients(sigma_mu_squared, sigma_theta_squared, 
@@ -252,118 +252,109 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
         alpha = lambda_tmp[0]
         lambda_ = lambda_tmp[1:]
 
-        # Check for orthogonality
-        testing = False
-        if testing:
-            error = (y_bar_bar - x_bar_bar.dot(beta + lambda_) - alpha) * weights
-            print('Mean error', np.mean(error))
-            print('Error times x', np.max(np.abs(x_w.T.dot(error))))
-
         return beta, lambda_, alpha, x_bar_bar_long
-
-    sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared = \
-                np.ones(3) * np.var(y) / 6
 
     beta_old = np.zeros(x_bar.shape[1])
     lambda_old = beta_old.copy()
-    sigma_mu_squared_old, sigma_theta_squared_old, sigma_epsilon_squared_old = 10, 10, 10
+    log_sigma_mu_squared_old, log_sigma_theta_squared_old, log_sigma_epsilon_squared_old = 0, 0, 0
     max_diff = 10
 
+    log_sigma_epsilon_squared = np.log(np.var(y) / 6)
+    log_sigma_mu_squared = log_sigma_epsilon_squared
+    log_sigma_theta_squared = log_sigma_epsilon_squared
     i = 0
 
-    while abs(max_diff) > .001 and i < 15:
-        print('\n')
+    while abs(max_diff) > 1e-7 and i < 30:
         beta, lambda_, alpha, x_bar_bar_long =\
-                update_coefficients(sigma_mu_squared, sigma_theta_squared,
-                                    sigma_epsilon_squared)
+                update_coefficients(np.exp(log_sigma_mu_squared), np.exp(log_sigma_theta_squared),
+                                    np.exp(log_sigma_epsilon_squared))
                        
-        sigma_mu_squared, sigma_theta_squared, sigma_epsilon_squared\
-            = update_variances(beta, lambda_, alpha, sigma_mu_squared, 
-                                 sigma_theta_squared, sigma_epsilon_squared)
-
+        log_sigma_mu_squared, log_sigma_theta_squared, log_sigma_epsilon_squared, grad\
+            = update_variances(beta, lambda_, alpha, log_sigma_mu_squared, 
+                                 log_sigma_theta_squared, log_sigma_epsilon_squared)
         assert np.all(beta.shape == beta_old.shape)
         assert np.all(lambda_.shape == lambda_old.shape)
 
-        max_diff = max(np.max(np.abs(beta - beta_old)), np.max(np.abs(lambda_ - lambda_old)),
-                       abs(sigma_mu_squared - sigma_mu_squared_old),
-                       abs(sigma_theta_squared - sigma_theta_squared_old),
-                       abs(sigma_epsilon_squared - sigma_epsilon_squared_old))
-        if max_diff > 10**4:
-            print('beta\n', np.max(np.abs(beta - beta_old)), '\n', np.argmax(beta - beta_old))
-            print('lambda\n', np.max(np.abs(lambda_ - lambda_old)),
-                                    '\n', np.argmax(lambda_ - lambda_old))
-            print('sigma mu squared\n', sigma_mu_squared - sigma_mu_squared_old)
-            print('sigma theta squared\n', sigma_theta_squared - sigma_theta_squared_old)
-            print('sigma epsilon squared\n', sigma_epsilon_squared - sigma_epsilon_squared_old)
+        differences = np.array([np.max(np.abs(beta - beta_old)), np.max(np.abs(lambda_ - lambda_old)),
+                       abs(log_sigma_mu_squared - log_sigma_mu_squared_old),
+                       abs(log_sigma_theta_squared - log_sigma_theta_squared_old),
+                       abs(log_sigma_epsilon_squared - log_sigma_epsilon_squared_old)])
+        names = ['beta', 'lambda', 'sigma mu squared', 'sigma theta squared',
+                 'sigma epsilon squared']
+        max_diff = np.max(differences)
 
         beta_old = beta.copy()
         lambda_old = lambda_.copy()
-        sigma_mu_squared_old = sigma_mu_squared
-        sigma_theta_squared_old = sigma_theta_squared
-        sigma_epsilon_squared_old = sigma_epsilon_squared
+        log_sigma_mu_squared_old = log_sigma_mu_squared
+        log_sigma_theta_squared_old = log_sigma_theta_squared
+        log_sigma_epsilon_squared_old = log_sigma_epsilon_squared
         i += 1
-        assert np.isfinite(sigma_mu_squared)
+        assert np.isfinite(log_sigma_mu_squared)
+
+    print('Number of tries', i)
+    print('variances', log_sigma_mu_squared, log_sigma_theta_squared, 
+              log_sigma_epsilon_squared)
 
     beta, lambda_, alpha, x_bar_bar_long =\
-                update_coefficients(sigma_mu_squared, sigma_theta_squared,
-                                    sigma_epsilon_squared)
+                 update_coefficients(np.exp(log_sigma_mu_squared), np.exp(log_sigma_theta_squared),
+                                     np.exp(log_sigma_epsilon_squared))
 
     x_bar_bar = x_bar_bar_long[teacher_grouped.first_occurrences, :]
     predictable_var = np.var(x_bar_bar.dot(lambda_))
-    grad = get_grad_all(sigma_mu_squared, sigma_theta_squared,
-                        sigma_epsilon_squared, beta, lambda_, alpha, 
-                        10**(-9), ll_vec_func)
 
-    hessian = get_hess_2(sigma_mu_squared, sigma_theta_squared,
-                         sigma_epsilon_squared, beta, lambda_, alpha, 
-                         10**(-9), ll_vec_func)
+    hessian = get_hess(log_sigma_mu_squared, log_sigma_theta_squared,
+                       log_sigma_epsilon_squared, beta, lambda_, alpha, 
+                       1e-6, ll_vec_func, n_students_per_class)
+
+    sigma_mu_squared = np.exp(log_sigma_mu_squared)
 
     try:
         asymp_var = np.linalg.inv(hessian)
+        if np.any(np.diag(asymp_var) <= 0):
+            warnings.warn('some variables will have negative or zero variance')
     except np.linalg.LinAlgError:
-        print('Hessian was not invertible')
-        asymp_var = float('nan')
+        warnings.warn('Hessian was not invertible')
+        asymp_var = np.full(hessian.shape, np.nan)
 
     if not np.isfinite(asymp_var).all():
-        bias_correction = float('nan')
-        total_var = float('nan')
-        total_var_se = float('nan')
+        bias_correction = np.nan
+        total_var = np.nan
+        total_var_se = np.nan
     else:
+        var_sigma_mu_squared = sigma_mu_squared**2 * asymp_var[0, 0]
         lambda_idx = slice(-1 - len(beta), -1)
         var_lambda = asymp_var[lambda_idx, lambda_idx]
 
-        #print('var lambda', var_lambda)
-        tmp = x_bar_bar - np.mean(x_bar_bar, 0)
+        x_bar_bar_demeaned = x_bar_bar - np.mean(x_bar_bar, 0)
         try:
-            bias_correction_2 = np.sum(x_bar_bar.dot(np.linalg.cholesky(var_lambda))**2) / n_teachers
-            bias_correction = np.sum(tmp.dot(np.linalg.cholesky(var_lambda))**2) / n_teachers
+            bias_correction = np.sum(x_bar_bar_demeaned.dot(np.linalg.cholesky(var_lambda))**2)\
+                                / (n_teachers - 1)
         except np.linalg.LinAlgError:
-            print('Hessian was not positive definite')
-            bias_correction_2 = np.mean([row.T.dot(var_lambda).dot(row) 
-                                       for row in x_bar_bar])
-            bias_correction = np.mean([row.T.dot(var_lambda).dot(row)
-                                         for row in tmp])
+            warnings.warn('Hessian was not positive definite')
+            bias_correction = np.sum([row.T.dot(var_lambda).dot(row)
+                                      for row in x_bar_bar_demeaned]) / (n_teachers - 1)
 
         # print('bias correction', bias_correction)
         total_var = sigma_mu_squared + predictable_var - bias_correction
-        print('total with bias correction 1', total_var)
-        print('with 2', sigma_mu_squared + predictable_var - bias_correction_2)
         # Delta method: lambda variance to predictable var variance
         grad = np.zeros(asymp_var.shape[0])
-        grad[0] = 1
-        grad[lambda_idx] = 2 * np.mean(x_bar_bar.dot(lambda_)[:, None] * (x_bar_bar - np.mean(x_bar_bar, 0)), 0)
+        grad[0] = sigma_mu_squared
+        grad[lambda_idx] = 2 * np.mean(x_bar_bar.dot(lambda_)[:, None] * x_bar_bar_demeaned, 0)
         total_var_se = np.sqrt(grad.T.dot(asymp_var).dot(grad))
 
-    assert np.isfinite(sigma_mu_squared)
+    # TODO: use delta method to get asymptotic variance of sigma mu squared
+
+    assert np.isfinite(log_sigma_mu_squared)
 
     return {'sigma mu squared': sigma_mu_squared, 
-            'sigma theta squared': sigma_theta_squared, 
-            'sigma epsilon squared': sigma_epsilon_squared, 'beta': beta, 
-            'lambda':lambda_, 'alpha': alpha, 'predictable var':predictable_var,
-            'gradient': grad, 'hessian': np.array(hessian),
-            'total var': total_var, 'asymp var': asymp_var,
-            'bias correction': bias_correction, 'x bar bar': x_bar_bar,
-            'total var se': total_var_se}
+            'sigma theta squared': np.exp(log_sigma_theta_squared), 
+            'sigma epsilon squared': np.exp(log_sigma_epsilon_squared), 
+            'beta': beta, 'lambda':lambda_, 'alpha': alpha, 
+            'predictable var':predictable_var, 'gradient': grad, 
+            'hessian': np.array(hessian), 'total var': total_var, 
+            'asymp var': asymp_var, 'bias correction': bias_correction, 
+            'x bar bar': x_bar_bar, 'total var se': total_var_se,
+            'sigma mu squared se': np.sqrt(asymp_var[0, 0]) * sigma_mu_squared}
     
 
 def moment_matching_alg(data, outcome, teacher, dense_controls, class_level_vars,
@@ -384,6 +375,7 @@ def moment_matching_alg(data, outcome, teacher, dense_controls, class_level_vars
         n_teachers = len(set(data[teacher]))
         cat = [teacher] if categorical_controls is None\
                 else [teacher] + categorical_controls
+        print('About to estimate')
         beta, x = estimate(data, data[outcome].values, dense_controls, cat,
                            check_rank=True)
         # add teacher fixed effects back in
@@ -431,12 +423,16 @@ def moment_matching_alg(data, outcome, teacher, dense_controls, class_level_vars
     if var_mu_hat <= 0:
         warnings.warn('Var mu hat is negative. Measured to be '+ str(var_mu_hat))
     if moments_only:
-        return var_mu_hat, var_theta_hat, var_epsilon_hat
+        return {'sigma mu squared': var_mu_hat, 
+                'sigma theta squared': var_theta_hat, 
+                'sigma epsilon squared': var_epsilon_hat}
 
     results = get_each_va(class_df, var_theta_hat, var_epsilon_hat
                         , var_mu_hat, jackknife, teacher)
 
-    return results, var_mu_hat, var_theta_hat, var_epsilon_hat
+    return {'individual effects': results, 'sigma mu squared': var_mu_hat, 
+            'sigma theta squared': var_theta_hat, 
+            'sigma epsilon squared': var_epsilon_hat}
 
 
 def calculate_va(data, outcome, teacher, covariates, class_level_vars,
