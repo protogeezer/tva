@@ -287,7 +287,7 @@ def remove_duplicates(seq):
             continue
         seen[marker] = 1
         result.append(item)
-    return result
+    return np.array(result)
 
 
 def binscatter(x, y, nbins):

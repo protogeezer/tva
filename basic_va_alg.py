@@ -463,7 +463,9 @@ def calculate_va(data, outcome, teacher, covariates, class_level_vars,
     if covariates is not None:
         assert set(covariates).issubset(set(data.columns))
     if method != 'fk':
-        assert set(class_level_vars).issubset(set(data.columns))
+        if not set(class_level_vars).issubset(set(data.columns)):
+            print('class level vars ', class_level_vars)
+            print('are not in data.columns')
 
     # Preprocessing
     use_cols = [outcome, teacher]
@@ -494,7 +496,7 @@ def calculate_va(data, outcome, teacher, covariates, class_level_vars,
         
     dense_controls = None if covariates is None else data[covariates].values
     if add_constant:
-        #assert method == 'ks'
+        assert method == 'ks'
         if dense_controls is None:
             dense_controls = np.ones((len(data), 1))
         else:
