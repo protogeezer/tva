@@ -1,19 +1,48 @@
 import numpy as np
-import numpy.linalg as linalg
 import pandas as pd
-import scipy.sparse as sps
 from functools import reduce
+import warnings
 import sys
 from config_tva import *
 sys.path += [hdfe_dir]
 from hdfe import Groupby
-import warnings
 
-def get_ll_grad(log_sigma_mu_squared, log_sigma_theta_squared, log_sigma_epsilon_squared,
-           n_students_per_class, n_classes, n_students, y_tilde, x_tilde,
-           x_bar, y_bar, beta, lambda_, alpha, teacher_grouped, get_grad=False,
-           return_means=False, h=None, h_sum=None, y_bar_tilde=None, 
-           x_bar_tilde=None, y_bar_bar=None, x_bar_bar=None, start=0, variances_only=False):
+
+def get_ll_grad(log_sigma_mu_squared: float, log_sigma_theta_squared: float,
+                log_sigma_epsilon_squared: float, n_students_per_class: np.ndarray,
+                n_classes: int, n_students: int, y_tilde: np.ndarray, x_tilde: np.ndarray,
+                x_bar: np.ndarray, y_bar: np.ndarray, beta: np.ndarray, lambda_: np.ndarray,
+                alpha: float, teacher_grouped: Groupby, get_grad=False,
+                return_means=False, h=None, h_sum=None, y_bar_tilde=None,
+                x_bar_tilde=None, y_bar_bar=None, x_bar_bar=None, start=0, variances_only=False):
+    """
+
+    :param log_sigma_mu_squared:
+    :param log_sigma_theta_squared:
+    :param log_sigma_epsilon_squared:
+    :param n_students_per_class:
+    :param n_classes:
+    :param n_students:
+    :param y_tilde:
+    :param x_tilde:
+    :param x_bar:
+    :param y_bar:
+    :param beta:
+    :param lambda_:
+    :param alpha:
+    :param teacher_grouped:
+    :param get_grad:
+    :param return_means:
+    :param h:
+    :param h_sum:
+    :param y_bar_tilde:
+    :param x_bar_tilde:
+    :param y_bar_bar:
+    :param x_bar_bar:
+    :param start:
+    :param variances_only:
+    :return:
+    """
     assert np.isscalar(log_sigma_mu_squared)
     assert np.isscalar(log_sigma_theta_squared)
     assert np.isscalar(log_sigma_epsilon_squared)
@@ -26,18 +55,15 @@ def get_ll_grad(log_sigma_mu_squared, log_sigma_theta_squared, log_sigma_epsilon
     sigma_theta_squared = np.exp(log_sigma_theta_squared)
     sigma_epsilon_squared = np.exp(log_sigma_epsilon_squared)
 
-
     if h is None:
         h = 1 / (sigma_theta_squared + sigma_epsilon_squared / n_students_per_class)
-        assert np.all(h > 0)
-    else:
-        assert np.all(h > 0)
+    assert np.all(h > 0)
     if y_bar_tilde is None or x_bar_tilde is None or h_sum is None:
         h_sum_long = teacher_grouped.apply(np.sum, h)[:, 0]
         assert np.min(h_sum_long) >= np.min(h)
         precision_weights = h / h_sum_long
-        y_bar_bar_long = teacher_grouped.apply(np.sum, 
-                                              precision_weights * y_bar)[:, 0]
+        y_bar_bar_long = teacher_grouped.apply(np.sum,
+                                               precision_weights * y_bar)[:, 0]
         
         x_bar_bar_long = teacher_grouped.apply(lambda x: np.sum(x, 0), 
                                                precision_weights[:, None] * x_bar,
@@ -59,11 +85,11 @@ def get_ll_grad(log_sigma_mu_squared, log_sigma_theta_squared, log_sigma_epsilon
     bar_bar_err = y_bar_bar - x_bar_bar.dot(beta + lambda_) - alpha
 
     ll = (n_classes - n_students) * log_sigma_epsilon_squared\
-         + np.sum(np.log(h)) - np.sum(np.log(h_sum))\
-         - np.sum(np.log(sigma_mu_squared + one_over_h_sum))\
-         - np.sum((y_tilde[:, 0] - x_tilde.dot(beta))**2) / sigma_epsilon_squared\
-         - h.dot((y_bar_tilde - x_bar_tilde.dot(beta))**2)\
-         - np.dot(bar_bar_err**2, 1 / (sigma_mu_squared + one_over_h_sum))
+        + np.sum(np.log(h)) - np.sum(np.log(h_sum))\
+        - np.sum(np.log(sigma_mu_squared + one_over_h_sum))\
+        - np.sum((y_tilde[:, 0] - x_tilde.dot(beta))**2) / sigma_epsilon_squared\
+        - h.dot((y_bar_tilde - x_bar_tilde.dot(beta))**2)\
+        - np.dot(bar_bar_err**2, 1 / (sigma_mu_squared + one_over_h_sum))
     ll /= -2
     assert np.isfinite(ll)
     if not get_grad:
@@ -82,7 +108,7 @@ def get_ll_grad(log_sigma_mu_squared, log_sigma_theta_squared, log_sigma_epsilon
     if start <= 2:
         first = 1 / h - (y_bar_tilde - x_bar_tilde.dot(beta))**2
         second = -one_over_h_sum + one_over_h_sum**2 / (sigma_mu_squared + one_over_h_sum)\
-                - (one_over_h_sum / (sigma_mu_squared + one_over_h_sum))**2 * bar_bar_err**2
+            - (one_over_h_sum / (sigma_mu_squared + one_over_h_sum))**2 * bar_bar_err**2
 
         d_h_d_log_e = -h**2 * sigma_epsilon_squared / n_students_per_class
         d_e_sum = teacher_grouped.apply(np.sum, d_h_d_log_e, broadcast=False)
@@ -123,7 +149,8 @@ def get_ll_vec_func(n_students_per_class, n_classes, n_students, y_tilde,
     Returns a function of a vector which contains variances, 
     beta, lambda_, and alpha
     """
-    k = x_bar.shape[1] 
+    k = x_bar.shape[1]
+
     def f(vec, get_grad=False, return_means=False, h=None, h_sum=None, 
           x_bar_tilde=None, y_bar_tilde=None, y_bar_bar=None, x_bar_bar=None,
           start=0, variances_only=False):
@@ -138,7 +165,7 @@ def get_ll_vec_func(n_students_per_class, n_classes, n_students, y_tilde,
 
 
 def get_hess(log_sigma_mu_squared, log_sigma_theta_squared, log_sigma_epsilon_squared, 
-             beta, lambda_, alpha, epsilon, ll_vec_func, n_students_per_class):
+             beta, lambda_, alpha, epsilon, ll_vec_func):
     for elt in [log_sigma_mu_squared, log_sigma_theta_squared, log_sigma_epsilon_squared, 
                 alpha, epsilon]:
         assert np.isscalar(elt)
@@ -168,51 +195,56 @@ def get_hess(log_sigma_mu_squared, log_sigma_theta_squared, log_sigma_epsilon_sq
                 warnings.warn('Gradient indicates you may not be at an optimum')
         # When updating other parameters, don't need to recalculate stuff
         else:
-            _, upper = ll_vec_func(vec + eye[:,i] * epsilon, start=i, get_grad=True,
-                                 h=h, h_sum=h_sum, y_bar_tilde=y_bar_tilde, 
-                                 x_bar_tilde=x_bar_tilde, y_bar_bar=y_bar_bar, 
-                                 x_bar_bar=x_bar_bar)
-            _, lower = ll_vec_func(vec - eye[:,i] * epsilon, start=i, get_grad=True,
-                                 h=h, h_sum=h_sum, y_bar_tilde=y_bar_tilde, 
-                                 x_bar_tilde=x_bar_tilde, y_bar_bar=y_bar_bar, 
-                                 x_bar_bar=x_bar_bar)
+            _, upper = ll_vec_func(vec + eye[:, i] * epsilon, start=i, get_grad=True,
+                                   h=h, h_sum=h_sum, y_bar_tilde=y_bar_tilde,
+                                   x_bar_tilde=x_bar_tilde, y_bar_bar=y_bar_bar,
+                                   x_bar_bar=x_bar_bar)
+            _, lower = ll_vec_func(vec - eye[:, i] * epsilon, start=i, get_grad=True,
+                                   h=h, h_sum=h_sum, y_bar_tilde=y_bar_tilde,
+                                   x_bar_tilde=x_bar_tilde, y_bar_bar=y_bar_bar,
+                                   x_bar_bar=x_bar_bar)
         hess = (upper[i:] - lower[i:]) / (2 * epsilon)
         hessian[i, i:] = hess
         hessian[i:, i] = hess
 
     return hessian
 
-
 toString = lambda *x: '\n'.join((str(elt) for elt in x))
-# For printing stuff
-# sample use
-# text = Test('teaher number', teacher_number)
-# text.append('observation number', observation_number, other_number)
-# print(text)
-class Text(object): 
+
+
+class Text(object):
+    """
+    For printing stuff
+    sample use
+    text = Test('teaher number', teacher_number)
+    text.append('observation number', observation_number, other_number)
+    print(text)
+    """
     def __init__(self, *string):
         self.text = toString(*string)
+
     def append(self, *string):
         self.text = self.text + '\n' + toString(*string)
+
     def __str__(self):
         return '\n\n\n' + self.text
 
 
 def make_reg_table(reg_obj, var_names, categorical_controls):
-    def format(param, t_stat, se):
+    def format_(param, t_stat, se):
         if abs(t_stat) > 3.291:
             stars = '***'
         elif abs(t_stat) > 2.576:
             stars = '**'
         elif abs(t_stat) > 1.96:
             stars = '*'
-        else: stars = '*'
-        return (str(int(round(param * 1000)) / 1000) + stars
-              , '(' + str(int(round(se * 1000)) / 1000) + ')')
+        else:
+            stars = '*'
+        return str(int(round(param * 1000)) / 1000) + stars,\
+            '(' + str(int(round(se * 1000)) / 1000) + ')'
 
-
-    coef_col = reduce(lambda x, y: x + y
-                    , (format(p, t, se) 
+    coef_col = reduce(lambda x, y: x + y,
+                      (format_(p, t, se)
                        for p, t, se 
                        in zip(reg_obj.params, reg_obj.tvalues, reg_obj.bse)))
     tuples = [(name, type) for name in var_names for type in ('beta', 'se')]
@@ -224,13 +256,13 @@ def make_reg_table(reg_obj, var_names, categorical_controls):
     coef_col = coef_col[keeps]
     for cat in categorical_controls:
         coef_col[(cat, 'F')] = 'X'
-        #vars = [cat in v for v in var_names]
-        #B = np.zeros((sum(vars), len(var_names)))
-        #for i, idx in enumerate(np.where(np.array(vars))[0]):
-        #    B[i, idx] = 1
-        #f_results = reg_obj.f_test(B).__dict__
-        #coef_col[(cat, 'F')] = f_results['fvalue'][0][0]
-        #coef_col[(cat, 'p')] = '(' + str(int(round(f_results['pvalue'] * 1000)) / 1000) + ')'
+        # vars = [cat in v for v in var_names]
+        # B = np.zeros((sum(vars), len(var_names)))
+        # for i, idx in enumerate(np.where(np.array(vars))[0]):
+        #     B[i, idx] = 1
+        # f_results = reg_obj.f_test(B).__dict__
+        # coef_col[(cat, 'F')] = f_results['fvalue'][0][0]
+        # coef_col[(cat, 'p')] = '(' + str(int(round(f_results['pvalue'] * 1000)) / 1000) + ')'
 
     coef_col[('N', '')] = reg_obj.df_resid + len(var_names) + 1
     coef_col[('R-squared', '')] = reg_obj.rsquared
@@ -239,8 +271,8 @@ def make_reg_table(reg_obj, var_names, categorical_controls):
 
 # List of regression objects; list of lists of controls
 def make_table(regs, controls, categorical_controls):
-    tab =  pd.concat((make_reg_table(x, var_names, categorical_controls) 
-                      for x, var_names in zip(regs, controls)), axis=1)
+    tab = pd.concat((make_reg_table(x, var_names, categorical_controls)
+                     for x, var_names in zip(regs, controls)), axis=1)
     # order columns better
     constant = tab.select(lambda x: x[0] == 'constant')
     beta_parts = tab.select(lambda x: x[1] in ('beta', 'se') 
@@ -330,14 +362,10 @@ def check_calibration(errors, precisions):
     assert mean_standardized_error < 1 + 2 * standardized_error_se 
 
 
-# df should actually be an array
-def get_unshrunk_va(array, var_theta_hat, var_epsilon_hat, jackknife):
+def get_unshrunk_va(array, jackknife):
     if jackknife:
-        unshrunk = np.array(np.sum(array[:, 1]) - array[:, 1]) / (len(array)-1)
-    else:
-        unshrunk = np.mean(array[:, 1])
-
-    return unshrunk
+        return np.array(np.sum(array[:, 1]) - array[:, 1]) / (len(array)-1)
+    return np.mean(array[:, 1])
 
 
 def get_va(df, var_theta_hat, var_epsilon_hat, var_mu_hat, jackknife):
