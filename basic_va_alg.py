@@ -12,6 +12,7 @@ from config_tva import hdfe_dir
 sys.path += [hdfe_dir]
 from hdfe import Groupby, estimate, make_dummies
 from multicollinearity import find_collinear_cols
+from mle import MLE
 
 
 def invert_block_matrix(A, B, D):
@@ -193,7 +194,7 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
         def get_ll_helper(params):
             params = np.concatenate((params, beta, lambda_, [alpha]))
             return ll_vec_func(params)
-             
+
         def get_grad_helper(params):
             log_sigma_mu_squared, log_sigma_theta_squared, log_sigma_epsilon_squared = \
                      params
@@ -210,8 +211,8 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
         # but why does the gradient get so huge?
         # Probably fixed with upper bound.
         result = minimize(get_ll_helper, 
-                          [log_sigma_mu_squared, log_sigma_theta_squared,
-                           log_sigma_epsilon_squared],
+                          np.array([log_sigma_mu_squared, log_sigma_theta_squared,
+                                    log_sigma_epsilon_squared]),
                           jac=get_grad_helper, method='L-BFGS-B',
                           bounds=[(-np.inf, np.inf), (-np.inf, np.inf), (-50, 50)],
                           options={'disp': False, 'ftol': 1e-14, 'gtol': 1e-7})
@@ -275,10 +276,12 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
     i = 0
 
     while abs(max_diff) > 1e-7 and i < 30:
-        beta, lambda_, alpha, x_bar_bar_long =\
+        print('\n')
+        print(i)
+        beta, lambda_, alpha, _ =\
                 update_coefficients(np.exp(log_sigma_mu_squared), np.exp(log_sigma_theta_squared),
                                     np.exp(log_sigma_epsilon_squared))
-                       
+
         log_sigma_mu_squared, log_sigma_theta_squared, log_sigma_epsilon_squared, grad\
             = update_variances(beta, lambda_, alpha, log_sigma_mu_squared, 
                                log_sigma_theta_squared, log_sigma_epsilon_squared)
@@ -314,6 +317,7 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
     hessian = get_hess(log_sigma_mu_squared, log_sigma_theta_squared,
                        log_sigma_epsilon_squared, beta, lambda_, alpha, 
                        1e-6, ll_vec_func)
+    print('hessian', np.sum(hessian == 0))
 
     sigma_mu_squared = np.exp(log_sigma_mu_squared)
 
@@ -337,6 +341,7 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
         try:
             bias_correction = np.sum(x_bar_bar_demeaned.dot(np.linalg.cholesky(var_lambda))**2)\
                                 / (n_teachers - 1)
+            print('bias correction', bias_correction)
         except np.linalg.LinAlgError:
             warnings.warn('Hessian was not positive definite')
             bias_correction = np.sum([row.T.dot(var_lambda).dot(row)
@@ -362,11 +367,12 @@ def mle(data, outcome, teacher, dense_controls, categorical_controls,
                 'x bar bar': x_bar_bar, 'total var se': total_var_se,
                 'sigma mu squared se': np.sqrt(asymp_var[0, 0]) * sigma_mu_squared}
     if not moments_only:
-        # Find individual results
-        rho = sigma_mu_squared / (sigma_mu_squared + 1 / h_sum)
-        resid = y_bar_bar - x_bar_bar.dot(beta) - alpha
-        predicted = x_bar_bar.dot(lambda_)
-        results['individual scores'] = (1 - rho) * resid + rho * predicted
+        raise NotImplementedError('moments_only should be True')
+    #     # Find individual results
+    #     rho = sigma_mu_squared / (sigma_mu_squared + 1 / h_sum)
+    #     resid = y_bar_bar - x_bar_bar.dot(beta) - alpha
+    #     predicted = x_bar_bar.dot(lambda_)
+    #     results['individual scores'] = (1 - rho) * resid + rho * predicted
     return results
     
 
@@ -442,9 +448,9 @@ def moment_matching_alg(data, outcome, teacher, dense_controls, class_level_vars
             'sigma epsilon squared': var_epsilon_hat}
 
 
-def calculate_va(data, outcome, teacher, covariates, class_level_vars,
-                 categorical_controls=None, jackknife=False, moments_only=True,
-                 method='ks', add_constant=False, teacher_controls=None):
+def calculate_va(data: pd.DataFrame, outcome: str, teacher: str, covariates: list,
+                 class_level_vars: list, categorical_controls=None, jackknife=False,
+                 moments_only=True, method='ks', add_constant=False, teacher_controls=None):
     """
 
     :param data: Pandas DataFrame
@@ -535,7 +541,25 @@ def calculate_va(data, outcome, teacher, covariates, class_level_vars,
                       class_level_vars, categorical_controls,
                       jackknife, moments_only, teacher_controls)
     elif method == 'mle':
-        return mle(data, outcome, teacher, dense_controls, categorical_controls,
-                   jackknife, class_level_vars, moments_only)
+        new = True
+        if new:
+            estimator = MLE(data, outcome, teacher, dense_controls, categorical_controls,
+                            jackknife, class_level_vars, moments_only)
+            estimator.fit()
+            teacher_idx = estimator.teacher_grouped.first_occurrences
+            results = {'sigma mu squared': estimator.sigma_mu_squared,
+                       'sigma theta squared': estimator.sigma_theta_squared,
+                       'sigma epsilon squared': estimator.sigma_epsilon_squared, 'beta': estimator.beta,
+                       'lambda': estimator.lambda_, 'alpha': estimator.alpha,
+                       'predictable var': estimator.predictable_var, 'hessian': estimator.hessian,
+                       'total var': estimator.total_var, 'asymp var': estimator.asymp_var,
+                       'bias correction': estimator.bias_correction,
+                       'x bar bar': estimator.x_bar_bar_long[teacher_idx],
+                       'total var se': estimator.total_var_se, 'sigma mu squared se': estimator.sigma_mu_squared_se}
+            return results
+        else:
+            return mle(data, outcome, teacher, dense_controls, categorical_controls,
+                            jackknife, class_level_vars, moments_only)
+
     else:
-        raise NotImplementedError('Only the methods ks, cfr, and fk are currently implmented.')
+        raise NotImplementedError('Only the methods ks, cfr, fk, and mle are currently implmented.')

@@ -15,39 +15,6 @@ def get_ll_grad(log_sigma_mu_squared: float, log_sigma_theta_squared: float,
                 alpha: float, teacher_grouped: Groupby, get_grad=False,
                 return_means=False, h=None, h_sum=None, y_bar_tilde=None,
                 x_bar_tilde=None, y_bar_bar=None, x_bar_bar=None, start=0, variances_only=False):
-    """
-
-    :param log_sigma_mu_squared:
-    :param log_sigma_theta_squared:
-    :param log_sigma_epsilon_squared:
-    :param n_students_per_class:
-    :param n_classes:
-    :param n_students:
-    :param y_tilde:
-    :param x_tilde:
-    :param x_bar:
-    :param y_bar:
-    :param beta:
-    :param lambda_:
-    :param alpha:
-    :param teacher_grouped:
-    :param get_grad:
-    :param return_means:
-    :param h:
-    :param h_sum:
-    :param y_bar_tilde:
-    :param x_bar_tilde:
-    :param y_bar_bar:
-    :param x_bar_bar:
-    :param start:
-    :param variances_only:
-    :return:
-    """
-    assert np.isscalar(log_sigma_mu_squared)
-    assert np.isscalar(log_sigma_theta_squared)
-    assert np.isscalar(log_sigma_epsilon_squared)
-    assert np.isscalar(alpha)
-    assert np.isscalar(n_students)
     assert n_students_per_class.shape[0] == n_classes
     assert y_tilde.shape[0] == n_students
 
