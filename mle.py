@@ -25,7 +25,7 @@ class MLE:
         :param class_level_vars:
         :param moments_only:
         """
-        if not moments_only and not jackknife:
+        if not moments_only and jackknife:
             raise NotImplementedError('jackknife must be false')
         assert len(class_level_vars) == 1
         # Set x
@@ -64,6 +64,7 @@ class MLE:
             np.ones(3) * np.var(data[outcome]) / 6
         del data
         self.teacher_grouped = Groupby(teachers)
+        assert self.teacher_grouped.already_sorted
         self.n_teachers = len(self.teacher_grouped.first_occurrences)
         x_bar_bar = self.teacher_grouped.apply(lambda arr: np.mean(arr, 0), self.x_bar,
                                                width=self.x_bar.shape[1], broadcast=False)
@@ -127,6 +128,7 @@ class MLE:
             h = 1 / (sigma_theta_squared + sigma_epsilon_squared / self.n_students_per_class)
         else:
             h = self.h
+        assert isinstance(h, np.ndarray)
         assert np.all(h > 0)
         if change_variances:
             h_sum_long = self.teacher_grouped.apply(np.sum, h)[:, 0]
@@ -151,6 +153,7 @@ class MLE:
             x_bar_bar_long = self.x_bar_bar_long
             h_sum = self.h_sum
 
+        assert isinstance(h_sum, np.ndarray)
         assert np.all(h_sum > 0)
 
         y_bar_bar = y_bar_bar_long[self.teacher_grouped.first_occurrences]
@@ -207,6 +210,8 @@ class MLE:
                     - (h[:, None] * x_bar_tilde).T.dot(y_bar_tilde - x_bar_tilde.dot(beta))
 
         w = 1 / (np.exp(log_sigma_mu_squared) + 1 / h_sum[:, None])
+        assert isinstance(w, np.ndarray)
+        assert isinstance(bar_bar_err, np.ndarray)
         grad_lambda = -(w * x_bar_bar).T.dot(bar_bar_err)
         grad_alpha = -bar_bar_err.dot(w)
 
@@ -364,9 +369,6 @@ class MLE:
             grad[0] = self.sigma_mu_squared
             grad[lambda_idx] = 2 * np.mean(x_bar_bar.dot(self.lambda_)[:, None] * x_bar_bar_demeaned, 0)
             self.total_var_se = np.sqrt(grad.T.dot(self.asymp_var).dot(grad))
-            if not np.isfinite(self.total_var_se):
-                import ipdb;
-                ipdb.set_trace()
             self.sigma_mu_squared_se = np.sqrt(self.asymp_var[0, 0]) * self.sigma_mu_squared
 
         if not self.moments_only:
